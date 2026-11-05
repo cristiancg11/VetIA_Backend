@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.api.v1.auth import auth_router
+from app.api.v1.triage import triage_router
 from app.core.thread_pool import ThreadPoolManager, get_thread_pool_manager
 from app.repositories.base_repository import BaseTriageRepository
 from app.repositories.supabase_repository import SupabaseTriageRepository
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 api_v1_router = APIRouter(prefix="", tags=["v1"])
 api_v1_router.include_router(auth_router)
+api_v1_router.include_router(triage_router)
+
 
 
 

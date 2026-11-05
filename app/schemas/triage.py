@@ -12,6 +12,58 @@ class TriageUrgencyLevel(str, Enum):
     MILD = "MILD"
 
 
+class TriageAnalysisUrgency(str, Enum):
+    """Clinical urgency severity for the multimodal AI triage response."""
+    CRITICO = "CRITICO"
+    URGENTE = "URGENTE"
+    MODERADO = "MODERADO"
+    LEVE = "LEVE"
+
+
+class TriageAnalysisColor(str, Enum):
+    """Color codes for the multimodal AI triage response."""
+    RED = "RED"
+    ORANGE = "ORANGE"
+    YELLOW = "YELLOW"
+    GREEN = "GREEN"
+
+
+class TriageAnalysisResponse(BaseModel):
+    """
+    Structured multimodal veterinary triage response schema.
+    Conforms to the standardized clinical emergency classification.
+    """
+    urgency_level: str = Field(
+        ...,
+        description="Nivel de urgencia clínica: CRITICO | URGENTE | MODERADO | LEVE",
+    )
+    color_code: str = Field(
+        ...,
+        description="Código de color del triaje: RED | ORANGE | YELLOW | GREEN",
+    )
+    presumptive_analysis: str = Field(
+        ...,
+        description="Descripción concisa de lo observado en la imagen y relación clínica con los síntomas descritos",
+    )
+    vital_risks: List[str] = Field(
+        ...,
+        description="Lista de riesgos vitales o complicaciones potenciales detectadas",
+    )
+    first_aid_actions: List[str] = Field(
+        ...,
+        description="Pautas de primeros auxilios y estabilización inmediata y segura para el tutor",
+    )
+    vet_consultation_timeframe: str = Field(
+        ...,
+        description="Marco de tiempo recomendado para atención presencial: Inmediato (menos de 1 hora) | En el transcurso del día | Próximas 24-48 horas",
+    )
+    requires_immediate_hospitalization: bool = Field(
+        ...,
+        description="Indica si el cuadro clínico amerita hospitalización inmediata",
+    )
+
+
+
 class FacilityType(str, Enum):
     """Recommended facility classification."""
     EMERGENCY_24H = "Clínica 24 horas con quirófano"

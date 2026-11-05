@@ -11,6 +11,9 @@ from .auth import (
 from .triage import (
     ClinicLocationResponse,
     FacilityType,
+    TriageAnalysisColor,
+    TriageAnalysisResponse,
+    TriageAnalysisUrgency,
     TriageAssessmentResponse,
     TriageUrgencyLevel,
 )
@@ -23,6 +26,9 @@ __all__ = [
     "RegisterRequest",
     "RegisterResponse",
     "SupabaseHealthResponse",
+    "TriageAnalysisColor",
+    "TriageAnalysisResponse",
+    "TriageAnalysisUrgency",
     "TriageAssessmentResponse",
     "TriageUrgencyLevel",
     "UserResponse",

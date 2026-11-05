@@ -310,3 +310,4 @@ async def check_supabase_health(
         timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         details=details,
     )
+

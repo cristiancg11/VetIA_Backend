@@ -79,3 +79,4 @@ def get_supabase_admin_client(settings: Optional[Settings] = None) -> Client:
 
     # Fallback to standard client
     return get_supabase_client(settings=cfg)
+
