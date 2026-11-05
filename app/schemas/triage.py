@@ -1,8 +1,9 @@
 """Data transfer models and schemas for pet triage, clinic localization, follow-up chat, and database persistence."""
 
+import re
 from enum import Enum
-from typing import List, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from typing import Any, List, Literal, Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TriageUrgencyLevel(str, Enum):
@@ -31,7 +32,7 @@ class TriageAnalysisColor(str, Enum):
 class TriageAnalysisResponse(BaseModel):
     """
     Structured multimodal veterinary triage response schema.
-    Conforms to the standardized clinical emergency classification.
+    Conforms to the Manchester Triage System adaptation with Chain-of-Thought clinical reasoning.
     """
     urgency_level: str = Field(
         ...,
@@ -39,11 +40,15 @@ class TriageAnalysisResponse(BaseModel):
     )
     color_code: str = Field(
         ...,
-        description="Código de color del triaje: RED | ORANGE | YELLOW | GREEN",
+        description="Código de color según Manchester Triage System: RED | ORANGE | YELLOW | GREEN",
     )
-    presumptive_analysis: str = Field(
+    visual_findings: str = Field(
         ...,
-        description="Descripción concisa de lo observado en la imagen y relación clínica con los síntomas descritos",
+        description="Detalles observados con precisión en la imagen (colorimetría, textura, consistencia y nitidez fotográfica)",
+    )
+    presumptive_diagnosis: List[str] = Field(
+        ...,
+        description="Lista de diagnósticos presuntivos clínicos correlacionados con la imagen y síntomas",
     )
     vital_risks: List[str] = Field(
         ...,
@@ -51,16 +56,55 @@ class TriageAnalysisResponse(BaseModel):
     )
     first_aid_actions: List[str] = Field(
         ...,
-        description="Pautas de primeros auxilios y estabilización inmediata y segura para el tutor",
+        description="Pautas secuenciales de primeros auxilios y estabilización inmediata y segura para el tutor",
     )
-    vet_consultation_timeframe: str = Field(
+    warnings_contraindications: List[str] = Field(
         ...,
-        description="Marco de tiempo recomendado para atención presencial: Inmediato (menos de 1 hora) | En el transcurso del día | Próximas 24-48 horas",
+        description="Medicamentos o acciones estrictamente prohibidas y contraindicadas (ej. NO inducir vómito, NO dar ibuprofeno)",
     )
-    requires_immediate_hospitalization: bool = Field(
+    estimated_fluid_deficit_percent: float = Field(
         ...,
-        description="Indica si el cuadro clínico amerita hospitalización inmediata",
+        description="Porcentaje numérico estimado de déficit hídrico o deshidratación (0.0 a 15.0%)",
     )
+
+    @field_validator("urgency_level", mode="before")
+    @classmethod
+    def normalize_urgency_level(cls, v: Any) -> str:
+        s = str(v).strip().upper()
+        if "CRITIC" in s:
+            return "CRITICO"
+        if "URGENT" in s:
+            return "URGENTE"
+        if "MODERAD" in s:
+            return "MODERADO"
+        if "LEV" in s:
+            return "LEVE"
+        return s
+
+    @field_validator("color_code", mode="before")
+    @classmethod
+    def normalize_color_code(cls, v: Any) -> str:
+        s = str(v).strip().upper()
+        if "ROJO" in s or "RED" in s:
+            return "RED"
+        if "NARANJA" in s or "ORANGE" in s:
+            return "ORANGE"
+        if "AMARILLO" in s or "YELLOW" in s:
+            return "YELLOW"
+        if "VERDE" in s or "GREEN" in s:
+            return "GREEN"
+        return s
+
+    @field_validator("estimated_fluid_deficit_percent", mode="before")
+    @classmethod
+    def normalize_fluid_deficit(cls, v: Any) -> float:
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            clean = re.sub(r"[^\d.]", "", v)
+            return float(clean) if clean else 0.0
+        return 0.0
+
 
 
 

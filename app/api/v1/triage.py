@@ -172,3 +172,4 @@ async def analyze_veterinary_triage(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ocurrió un error inesperado al procesar la evaluación clínica: {str(exc)}",
         )
+

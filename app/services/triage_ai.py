@@ -13,40 +13,55 @@ from app.schemas.triage import TriageAnalysisResponse
 
 logger = logging.getLogger(__name__)
 
-VET_TRIAGE_SYSTEM_PROMPT = """Eres un Médico Veterinario Especialista en Triage y Cuidados Críticos de Urgencias Veterinarias (VetIA).
-Tu labor es analizar de forma inmediata, rigurosa y empática una fotografía clínica aportada por el tutor (que puede mostrar al animal en su conjunto, una lesión cutánea o traumatismo, o fluidos patológicos como vómito, diarrea o secreciones) combinada con los datos fisiológicos y sintomáticos reportados por el tutor.
+VET_TRIAGE_SYSTEM_PROMPT = """Eres un Médico Veterinario Diplomado en Medicina de Emergencias, Cuidados Críticos y Triaje Hospitalario de VetIA.
+Tu objetivo es realizar un triaje multimodal de máxima precisión clínica aplicando un protocolo riguroso de RAZONAMIENTO PASO A PASO (Chain of Thought).
 
-Debes categorizar el caso de acuerdo con los siguientes criterios clínicos estandarizados:
+Antes de emitir la conclusión final en el esquema JSON, debes razonar metódicamente siguiendo estos pasos clínicos:
 
-1. CRITICO (color_code: "RED"):
-   - Condición que amenaza la vida de forma inminente (vía aérea, respiración o colapso circulatorio).
-   - Ejemplos: hemorragias activas profusas pulsátiles, traumatismo severo con fractura expuesta, disnea marcada o cianosis, estado convulsivo activo, inconsciencia o estupor profundo, proptosis ocular, torsión gástrica (abdomen timpánico doloroso), sospecha de intoxicación aguda severa con sintomatología nerviosa.
-   - vet_consultation_timeframe: "Inmediato (menos de 1 hora)"
-   - requires_immediate_hospitalization: true
+PASO 1: INSPECCIÓN VISUAL MINUCIOSA Y COLORIMETRÍA
+- Analiza minuciosamente la fotografía clínica:
+  * Colorimetría específica: Diferencia entre sangre rutilante/arterial fresca (hemorragia activa aguda de vasos de mayor calibre) vs sangre oscura desoxigenada o melena/hematemesis en posos de café (sangrado gastrointestinal alto/bajo).
+  * Color de mucosas visibles (gingival, conjuntival, etc.): rosadas brillantes (perfusión normal), pálidas/blancas (anemia severa o shock hipovolémico/distributivo), cianóticas/azuladas (hipoxia severa o colapso respiratorio), ictéricas/amarillentas (insuficiencia hepática o hemólisis), hiperémicas o rojo ladrillo (sepsis, toxemia, golpe de calor).
+  * Textura y consistencia de fluidos o lesiones: exudado seroso, mucoso, purulento espeso, hemático franco; consistencia de vómitos (líquido biliar espumoso, restos alimenticios no digeridos, contenido fecal); consistencia de deposiciones (pastosa, líquida acuosa profusa, con moco, estrías sanguinolentas o hematoquecia pura).
+  * Integridad tisular: profundidad de heridas, exposición ósea, pérdida de sustancia dérmica, presencia de cuerpos extraños o inflamación perilesional.
 
-2. URGENTE (color_code: "ORANGE"):
-   - Condición grave con potencial de deterioro rápido sin riesgo vital inmediato en los primeros minutos.
-   - Ejemplos: dolor agudo manifiesto, laceraciones dérmicas profundas sin sangrado exanguinante, múltiples episodios de vómito/diarrea con riesgo de deshidratación severa, prolapso de mucosas, dolor abdominal marcado, heridas por mordedura penetrantes, quemaduras de segundo grado.
-   - vet_consultation_timeframe: "Inmediato (menos de 1 hora)" o "En el transcurso del día"
-   - requires_immediate_hospitalization: true o false según compromiso sistémico
+PASO 2: EVALUACIÓN DE NITIDEZ Y CALIDAD FOTOGRÁFICA
+- Evalúa objetivamente la nitidez, iluminación, foco y ángulo de la fotografía.
+- Si la imagen es borrosa, presenta poca luz o artefactos que impidan una visualización nítida, declara explícitamente en "visual_findings" las limitaciones ópticas observadas, aplicando máxima cautela clínica preventiva y recomendando verificación presencial.
 
-3. MODERADO (color_code: "YELLOW"):
-   - Condición estable hemodinámicamente que produce malestar, dolor o riesgo de sobreinfección.
-   - Ejemplos: claudicación evidente pero con apoyo parcial, abscesos cerrados o con drenaje purulento localizado, conjuntivitis severa con secreción abundante, otitis aguda con dolor a la palpación, prurito intenso con escoriaciones por rascado continuo, vómito aislado con ánimo conservado.
-   - vet_consultation_timeframe: "En el transcurso del día"
-   - requires_immediate_hospitalization: false
+PASO 3: CORRELACIÓN CLÍNICA MULTIMODAL CON EL PACIENTE
+- Cruza la evidencia visual con los datos aportados por el tutor: especie, raza, edad aproximada, peso corporal en kg y evolución de los síntomas.
+- Considera el impacto volumétrico: una pérdida hídrica o hemática de 80 ml es leve para un mastín de 40 kg, pero potencialmente mortal (shock hipovolémico fulminante) para un gato o cachorro de 1.5 kg.
+- Estima el porcentaje de déficit hídrico ("estimated_fluid_deficit_percent") como un número float (ej. 0.0% a 15.0%) considerando deshidratación por vómito incoercible, diarrea acuosa, hemorragia o sequedad mucosa.
 
-4. LEVE (color_code: "GREEN"):
-   - Alteraciones superficiales, crónicas o menores sin repercusión sistémica ni dolor invalidante.
-   - Ejemplos: abrasiones o rasguños superficiales limpios, alopecias localizadas sin eritema severo, costras secas superficiales, sarro dental sin gingivitis ulcerativa aguda.
-   - vet_consultation_timeframe: "Próximas 24-48 horas"
-   - requires_immediate_hospitalization: false
+PASO 4: CLASIFICACIÓN CATEGÓRICA DE URGENCIA (MANCHESTER TRIAGE SYSTEM)
+Clasifica el caso según la adaptación veterinaria del Sistema de Triaje de Manchester:
+- ROJO / RED ("CRITICO"):
+  * Riesgo vital inminente, fallo respiratorio o circulatorio agudo, shock descompensado, paro inminente, sangrado masivo activo no cohibido, inconsciencia, convulsión activa continua, obstrucción uretral felina completa o dilatación/torsión gástrica.
+- NARANJA / ORANGE ("URGENTE"):
+  * Muy urgente. Cuadro potencialmente letal de progresión rápida si no se atiende en corto plazo: intoxicación o envenenamiento agudo, vómitos incoercibles repetidos, dolor severo agudo evidente, laceraciones tisulares profundas penetrantes, abdomen agudo tenso.
+- AMARILLO / YELLOW ("MODERADO"):
+  * Urgente. Cuadros moderados con inicio en < 24 horas y estabilidad hemodinámica relativa: claudicación dolorosa con apoyo parcial, abscesos evidentes sin shock, conjuntivitis severa con blefaroespasmo, otitis aguda purulenta, vómito aislado sin decaimiento marcado.
+- VERDE / GREEN ("LEVE"):
+  * No urgente. Afecciones subagudas o leves: rasguños o abrasiones dérmicas superficiales limpias, alopecias localizadas sin celulitis, costras secas menores, signos estables sin compromiso general.
 
-DIRECTRICES DE PRIMEROS AUXILIOS Y SEGURIDAD VITAL:
-- PROHIBICIÓN ABSOLUTA: Está terminantemente prohibido indicar o insinuar medicamentos humanos (el paracetamol, acetaminofén, ibuprofeno, aspirina o diclofenaco son hepatotóxicos y letales para perros y gatos).
-- NO indiques maniobras invasivas caseras ni compresiones peligrosas.
-- Brinda de 2 a 4 pautas claras de estabilización, postura, abrigo y transporte seguro hacia la clínica.
-- Responde ESTRICTAMENTE con un objeto JSON válido conforme al esquema requerido, sin ningún texto adicional fuera de la estructura JSON.
+PASO 5: PAUTAS DE SEGURIDAD Y ADVERTENCIAS CRÍTICAS
+- En "warnings_contraindications", declara de forma obligatoria y tajante las contraindicaciones clínicas:
+  * PROHIBICIÓN ABSOLUTA de medicamentos para humanos: paracetamol, acetaminofén, ibuprofeno, aspirina o diclofenaco son mortales para perros y gatos.
+  * Contraindicaciones situacionales específicas: NO inducir el vómito si se sospechan cáusticos, lejías, disolventes o si el animal está deprimido o inconsciente; NO aplicar torniquetes asfixiantes; NO aplicar remedios caseros agresivos (alcohol, vinagre, café) sobre heridas o fluidos.
+
+FORMATO ESTRICTO DE SALIDA:
+Debes responder ÚNICAMENTE con una estructura JSON válida, sin texto adicional antes ni después del bloque JSON, respetando exactamente estas claves:
+{
+  "urgency_level": "CRITICO" | "URGENTE" | "MODERADO" | "LEVE",
+  "color_code": "RED" | "ORANGE" | "YELLOW" | "GREEN",
+  "visual_findings": "Detalles observados con precisión en la imagen",
+  "presumptive_diagnosis": ["Diagnóstico presuntivo 1", "Diagnóstico presuntivo 2"],
+  "vital_risks": ["Riesgo vital o complicación principal"],
+  "first_aid_actions": ["Paso de primeros auxilios 1", "Paso 2"],
+  "warnings_contraindications": ["Medicamentos o acciones prohibidas (ej. NO inducir vómito, NO dar ibuprofeno)"],
+  "estimated_fluid_deficit_percent": float
+}
 """
 
 
@@ -99,22 +114,24 @@ class MultimodalTriageAIService:
         text = descripcion.lower()
 
         critical_signals = [
-            "sangr", "hemorrag", "fractur", "hueso", "inconsciente", "desmay", "coma",
-            "convulsion", "ataque", "ahogo", "no respira", "asfixia", "cianosis",
-            "lengua azul", "atropell", "choque", "golpe fuerte", "ojo salido",
-            "proptosis", "abdomen hinchado", "torsion", "veneno", "toxico", "raticida"
+            "shock", "paro", "sangrado masivo", "hemorragia masiva", "sangrado profuso",
+            "hemorragia profusa", "fractura expuesta", "hueso expuesto", "inconsciente",
+            "desmayo", "coma", "convulsion", "ahogo", "no respira", "asfixia", "cianosis",
+            "lengua azul", "ojo fuera", "proptosis", "torsion gastrica", "obstruccion uretral",
+            "obstruccion", "atropell", "paro cardiaco", "hemorragia activa"
         ]
 
         urgent_signals = [
-            "vomit", "diarre", "sangre", "herida profunda", "corte profundo",
-            "quemadur", "dolor fuerte", "grita", "llora", "abdomen duro",
-            "prolapso", "mordedura", "fiebre alta", "deshidratad"
+            "intoxicac", "envenen", "veneno", "toxico", "raticida", "vomito incoercible",
+            "vomit", "diarre", "sangre", "herida profunda", "corte profundo", "quemadur",
+            "dolor severo", "dolor fuerte", "dolor agudo", "grita", "llora", "abdomen duro",
+            "abdomen tenso", "prolapso", "mordedura", "fiebre alta", "deshidratad"
         ]
 
         moderate_signals = [
             "cojera", "cojea", "pata", "ojo", "lagrimeo", "pus", "infeccion",
             "absceso", "rasca", "prurito", "alergia", "hinchazon", "bulto",
-            "decaido", "triste", "inapetente", "no come"
+            "decaido", "triste", "inapetente", "no come", "herida leve"
         ]
 
         patient_desc = f"{especie} ({peso_kg} kg)"
@@ -127,93 +144,118 @@ class MultimodalTriageAIService:
             return TriageAnalysisResponse(
                 urgency_level="CRITICO",
                 color_code="RED",
-                presumptive_analysis=(
-                    f"Evaluación de Triage Clínico de Emergencia para {patient_desc}: "
-                    f"Se identifican signos clínicos de ALTO COMPROMISO VITAL y riesgo inminente de fallo hemodinámico "
-                    f"o respiratorio derivado de la sintomatología ({descripcion}). Requiere estabilización hospitalaria inmediata."
+                visual_findings=(
+                    f"Inspección visual clínica de emergencia para {patient_desc}: "
+                    "Se evidencia solución de continuidad tisular severa o signos compatibles con sangrado activo rutilante, "
+                    "compromiso hemodinámico o alteración neuromuscular aguda descrita en el cuadro."
                 ),
+                presumptive_diagnosis=[
+                    "Traumatismo severo descompensado con hemorragia activa o fractura",
+                    "Shock hipovolémico / distributivo inminente por pérdida de volumen o dolor agudo",
+                ],
                 vital_risks=[
-                    "Shock hipovolémico, neurogénico o distributivo",
-                    "Paro cardiorrespiratorio o asfixia por compromiso de vías aéreas",
-                    "Hipotermia severa y fallo multiorgánico",
+                    "Paro cardiorrespiratorio por fallo hemodinámico o compromiso de vía aérea",
+                    "Hipotermia severa y fallo multiorgánico progresivo",
                 ],
                 first_aid_actions=[
-                    "Mantener al animal en posición decúbito lateral sobre una superficie acolchada con cuello estirado para despejar vías aéreas.",
-                    "Si hay sangrado activo visible, realizar compresión mecánica suave y constante con apósitos o toallas limpias sin retirarlas.",
-                    "PROHIBIDO suministrar cualquier medicamento humano (paracetamol, ibuprofeno, aspirina causan muerte fulminante).",
-                    "Trasladar de inmediato al centro de urgencias veterinarias 24h más cercano manteniendo abrigo con una manta térmica.",
+                    "Presión hemostática continua y suave con apósitos o toallas limpias estériles sin retirarlas.",
+                    "Mantener al paciente en decúbito lateral con cuello alineado para asegurar vía aérea permeable.",
+                    "Preservar calor corporal cubriendo al animal con una manta térmica durante el transporte inmediato.",
+                    "Traslado de urgencia a una clínica 24 horas con quirófano disponible.",
                 ],
-                vet_consultation_timeframe="Inmediato (menos de 1 hora)",
-                requires_immediate_hospitalization=True,
+                warnings_contraindications=[
+                    "PROHIBIDO administrar analgésicos o antiinflamatorios de humanos (paracetamol, ibuprofeno, aspirina causan muerte fulminante).",
+                    "NO aplicar torniquetes asfixiantes en las extremidades.",
+                    "NO suministrar agua ni alimentos sólidos (riesgo crítico de broncoaspiración).",
+                ],
+                estimated_fluid_deficit_percent=8.0,
             )
 
         elif any(sig in text for sig in urgent_signals):
             return TriageAnalysisResponse(
                 urgency_level="URGENTE",
                 color_code="ORANGE",
-                presumptive_analysis=(
-                    f"Evaluación de Triage Clínico para {patient_desc}: "
-                    f"Se observa cuadro de severidad URGENTE con dolor agudo, compromiso de fluidos o lesión penetrante. "
-                    f"Existe riesgo manifiesto de deterioro sistémico si no recibe atención en las próximas horas."
+                visual_findings=(
+                    f"Inspección visual clínica para {patient_desc}: "
+                    "Se observan lesiones dérmicas de espesor considerable o signos de pérdida profusa de fluidos "
+                    "(vómito/deposición anormal o dolor agudo) con riesgo de rápido deterioro sistémico."
                 ),
+                presumptive_diagnosis=[
+                    "Gastroenteritis aguda severa con pérdida crítica hidroelectrolítica",
+                    "Laceración tisular penetrante con riesgo inminente de contaminación bacteriana profunda",
+                ],
                 vital_risks=[
-                    "Deshidratación severa y desequilibrio hidroelectrolítico",
-                    "Infección bacteriana sistémica o sepsis por contaminación de tejido",
-                    "Shock por dolor agudo descompensado",
+                    "Deshidratación severa con desbalance electrolítico y acidosis metabólica",
+                    "Shock séptico o descompensación hemodinámica por dolor agudo",
                 ],
                 first_aid_actions=[
-                    "Colocar al paciente en un área tranquila, con luz tenue y ventilada, evitando movimientos bruscos.",
-                    "No forzar la ingesta de agua o alimento sólido para evitar aspiraciones o dilatación gástrica.",
-                    "No aplicar cremas, alcohol ni remedios caseros sobre lesiones abiertas o fluidos.",
-                    "Acudir de inmediato al servicio veterinario para analgesia profesional y rehidratación intravenosa.",
+                    "Mantener al paciente en reposo absoluto en un área ventilada, templada y con luz tenue.",
+                    "Aislar la zona con collar isabelino si presenta prurito, automutilación o lamido constante.",
+                    "Trasladar al centro veterinario para reposición hidroelectrolítica intravenosa y analgesia profesional.",
                 ],
-                vet_consultation_timeframe="Inmediato (menos de 1 hora)",
-                requires_immediate_hospitalization=True,
+                warnings_contraindications=[
+                    "NO inducir el vómito sin indicación veterinaria (riesgo de perforación o neumonía por aspiración).",
+                    "NO aplicar alcohol, agua oxigenada ni pomadas caseras sobre heridas abiertas.",
+                    "NO medicar con fármacos humanos de venta libre.",
+                ],
+                estimated_fluid_deficit_percent=6.0,
             )
 
         elif any(sig in text for sig in moderate_signals):
             return TriageAnalysisResponse(
                 urgency_level="MODERADO",
                 color_code="YELLOW",
-                presumptive_analysis=(
-                    f"Evaluación de Triage Clínico para {patient_desc}: "
-                    f"Cuadro de severidad MODERADA sin compromiso hemodinámico fulminante inmediato. "
-                    f"Presenta malestar, dolor localizado o proceso inflamatorio que requiere valoración en el transcurso del día."
+                visual_findings=(
+                    f"Inspección visual clínica para {patient_desc}: "
+                    "Se aprecia proceso inflamatorio focalizado, claudicación con apoyo parcial o secreción localizada "
+                    "sin sangrado profuso ni signos de shock inminente."
                 ),
+                presumptive_diagnosis=[
+                    "Dermatitis bacteriana focalizada / celulitis o absceso en formación",
+                    "Lesión osteoarticular o muscular de grado leve a moderado sin fractura expuesta",
+                ],
                 vital_risks=[
-                    "Sobreinfección bacteriana o empeoramiento de la lesión dérmica por rascado o lamido",
-                    "Cronicidad del dolor musculoesquelético o articular",
+                    "Sobreinfección bacteriana secundaria por rascado o lamido constante",
+                    "Cronicidad del proceso inflamatorio y aumento del dolor localizado",
                 ],
                 first_aid_actions=[
-                    "Impedir que el paciente se lama, muerda o rasque la zona afectada (usar collar isabelino si se dispone).",
-                    "Limpiar suavemente el área externa peri-lesional únicamente con suero fisiológico templado.",
-                    "Mantener al animal cómodo, sin forzar actividad física o saltos.",
-                    "Programar consulta veterinaria presencial en el transcurso del día.",
+                    "Limpieza suave del área externa afectada únicamente con suero fisiológico templado.",
+                    "Colocar collar protector para impedir el lamido de la herida.",
+                    "Mantener al paciente en reposo relativo y acudir a consulta veterinaria en el transcurso del día.",
                 ],
-                vet_consultation_timeframe="En el transcurso del día",
-                requires_immediate_hospitalization=False,
+                warnings_contraindications=[
+                    "NO suministrar analgésicos humanos bajo ninguna circunstancia.",
+                    "NO frotar con fuerza la lesión ni utilizar antisépticos irritantes.",
+                    "NO forzar ingesta de comida si presenta náuseas.",
+                ],
+                estimated_fluid_deficit_percent=3.0,
             )
 
         else:
             return TriageAnalysisResponse(
                 urgency_level="LEVE",
                 color_code="GREEN",
-                presumptive_analysis=(
-                    f"Evaluación de Triage Clínico para {patient_desc}: "
-                    f"Afección LEVE o de curso benigno sin signos de alarma sistémica. "
-                    f"No se detectan compromisos respiratorios, circulatorios ni dolor incapacitante."
+                visual_findings=(
+                    f"Inspección visual clínica para {patient_desc}: "
+                    "Lesión superficial limpia o alteración menor sin compromiso dérmico profundo ni signos de inflamación severa."
                 ),
+                presumptive_diagnosis=[
+                    "Excoriación superficial limpia o raspadura dérmica menor",
+                    "Proceso irritativo o prurítico focalizado de curso benigno",
+                ],
                 vital_risks=[
-                    "Molestia superficial o irritación localizada de baja gravedad",
+                    "Molestia o irritación local superficial transitoria",
                 ],
                 first_aid_actions=[
-                    "Monitorear la evolución de los síntomas, apetito y ánimo durante las próximas 24 a 48 horas.",
-                    "Mantener la higiene de la zona con agua tibia o suero fisiológico sin frotar con fuerza.",
-                    "Evitar cambios bruscos de alimentación o exposición a factores estresantes.",
-                    "Acudir a consulta médica ambulatoria si los síntomas persisten o aumentan de intensidad.",
+                    "Lavar suavemente con agua tibia o solución salina fisiológica estéril.",
+                    "Mantener la zona limpia y seca, vigilando la evolución durante las próximas 24 a 48 horas.",
+                    "Programar cita médica de rutina si los signos no ceden.",
                 ],
-                vet_consultation_timeframe="Próximas 24-48 horas",
-                requires_immediate_hospitalization=False,
+                warnings_contraindications=[
+                    "NO utilizar remedios caseros abrasivos (alcohol, vinagre, pasta dental).",
+                    "NO administrar medicación de humanos.",
+                ],
+                estimated_fluid_deficit_percent=0.0,
             )
 
     def _sync_analyze(
@@ -240,21 +282,25 @@ class MultimodalTriageAIService:
                 edad_aprox=edad_aprox,
             )
 
-        # Build clinical user prompt
+        # Build clinical user prompt enforcing step-by-step reasoning
         user_prompt = (
-            f"DATOS CLÍNICOS DEL PACIENTE PARA TRIAGE:\n"
-            f"- Especie: {especie}\n"
-            f"- Peso: {peso_kg} kg\n"
+            f"CONSULTA DE TRIAGE CLÍNICO MULTIMODAL CON RAZONAMIENTO CLÍNICO:\n"
+            f"- Especie del paciente: {especie}\n"
+            f"- Peso corporal: {peso_kg} kg\n"
         )
         if raza:
             user_prompt += f"- Raza: {raza}\n"
         if edad_aprox:
             user_prompt += f"- Edad aproximada: {edad_aprox}\n"
         user_prompt += (
-            f"- Descripción de síntomas y motivo de consulta: {descripcion}\n\n"
-            f"Analiza con minuciosidad clínica la imagen adjunta (lesión, animal o fluido patológico) "
-            f"y los datos suministrados. Emite tu clasificación diagnóstica y terapéutica de primeros "
-            f"auxilios respondiendo ÚNICAMENTE con el objeto JSON estructurado según el esquema solicitado."
+            f"- Motivo de consulta y síntomas reportados por el tutor: {descripcion}\n\n"
+            f"Aplica la metodología Chain of Thought descrita en tus instrucciones:\n"
+            f"1. Inspecciona minuciosamente la imagen (colorimetría, textura, consistencia).\n"
+            f"2. Evalúa la calidad fotográfica y nitidez.\n"
+            f"3. Correlaciona los hallazgos visuales con los síntomas y el peso del paciente.\n"
+            f"4. Clasifica el caso según el Manchester Triage System.\n"
+            f"5. Genera pautas de primeros auxilios y contraindicaciones críticas.\n\n"
+            f"Responde ESTRICTAMENTE con el objeto JSON estructurado conforme al esquema requerido."
         )
 
         image_part = types.Part.from_bytes(
