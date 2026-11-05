@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
+from app.api.v1.auth import auth_router
 from app.core.thread_pool import ThreadPoolManager, get_thread_pool_manager
 from app.repositories.base_repository import BaseTriageRepository
 from app.repositories.supabase_repository import SupabaseTriageRepository
@@ -25,6 +26,8 @@ from app.services.storage_service import SupabaseStorageService
 logger = logging.getLogger(__name__)
 
 api_v1_router = APIRouter(prefix="", tags=["v1"])
+api_v1_router.include_router(auth_router)
+
 
 
 def get_triage_service() -> BaseTriageService:
@@ -104,7 +107,7 @@ async def diagnose_pet_condition(
                 mime_type=image.content_type or "image/jpeg",
             )
         except Exception as storage_err:
-            logger.warning("Storage upload notice: %s", storage_err)
+            logger.error("[SUPABASE STORAGE] Error al subir imagen a Supabase Storage: %s", storage_err, exc_info=True)
             image_url = "https://images.unsplash.com/photo-1548767797-d8c844163c4c?auto=format&fit=crop&q=80&w=800"
 
         # Step 3: Evaluate clinical condition via Gemini 2.5 Flash / Smart Triage Engine
@@ -138,7 +141,7 @@ async def diagnose_pet_condition(
             if saved_record and "id" in saved_record:
                 assessment.record_id = str(saved_record["id"])
         except Exception as db_err:
-            logger.warning("Failed to persist record in Supabase: %s", db_err)
+            logger.error("[SUPABASE DB ERROR] Fallo al persistir registro en Supabase: %s", db_err, exc_info=True)
 
         return assessment
 
@@ -168,7 +171,7 @@ async def get_triage_history(
     try:
         return await repository.get_recent_records(limit=limit, user_id=user_id)
     except Exception as exc:
-        logger.warning("History fetch issue: %s", exc)
+        logger.error("[SUPABASE HISTORY ERROR] Error al recuperar historial de triage: %s", exc, exc_info=True)
         return []
 
 

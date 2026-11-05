@@ -1,9 +1,13 @@
 """Application configuration module using Pydantic Settings."""
 
 from functools import lru_cache
-from typing import List, Union
+from pathlib import Path
+from typing import List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+ENV_FILE_PATH = BASE_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -18,8 +22,9 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
 
     # Supabase Settings
-    SUPABASE_URL: str = "https://vdxzoiededgmfysfoozd.supabase.co"
-    SUPABASE_KEY: str = ""
+    SUPABASE_URL: str = "https://xqkqogrfakobdxrfusdg.supabase.co"
+    SUPABASE_KEY: str = "sb_publishable_J0B8Xwod53qVb7c2Q-bQgg__nkzi55I"
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
     SUPABASE_STORAGE_BUCKET: str = "pet-images"
     SUPABASE_TABLE_NAME: str = "triage_records"
 
@@ -37,13 +42,21 @@ class Settings(BaseSettings):
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
-        """Parse comma-separated origin strings into a list."""
+        """Parse comma-separated origin strings into a list and guarantee local dev origins."""
+        default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+        parsed: List[str] = []
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        return v
+            parsed = [origin.strip() for origin in v.split(",") if origin.strip()]
+        elif isinstance(v, list):
+            parsed = [str(origin).strip() for origin in v if str(origin).strip()]
+
+        for default in default_origins:
+            if default not in parsed:
+                parsed.append(default)
+        return parsed
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE_PATH) if ENV_FILE_PATH.exists() else ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -54,3 +67,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Provide a cached singleton instance of application settings."""
     return Settings()
+

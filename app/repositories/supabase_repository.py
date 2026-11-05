@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from supabase import Client, create_client
 
 from app.core.config import Settings, get_settings
+from app.core.supabase import get_supabase_admin_client
 from app.core.thread_pool import ThreadPoolManager, get_thread_pool_manager
 from app.repositories.base_repository import BaseTriageRepository
 
@@ -33,16 +34,18 @@ class SupabaseTriageRepository(BaseTriageRepository):
                 "SUPABASE_URL and SUPABASE_KEY must be configured in environment."
             )
 
-        self._client: Client = create_client(
-            supabase_url=self._settings.SUPABASE_URL,
-            supabase_key=self._settings.SUPABASE_KEY,
-        )
+        self._client: Client = get_supabase_admin_client(settings=self._settings)
 
     def _sync_save_record(self, record_data: Dict[str, Any]) -> Dict[str, Any]:
         """Synchronous insert into Supabase triage_records table with graceful degradation."""
         try:
             response = self._client.table(self._table_name).insert(record_data).execute()
             if response.data and len(response.data) > 0:
+                logger.info(
+                    "[SUPABASE DB SUCCESS] Registro guardado exitosamente en '%s' (ID: %s)",
+                    self._table_name,
+                    response.data[0].get("id"),
+                )
                 return response.data[0]
             return record_data
         except Exception as exc:
@@ -52,12 +55,28 @@ class SupabaseTriageRepository(BaseTriageRepository):
                     clean_data = {k: v for k, v in record_data.items() if k != "user_id"}
                     retry_res = self._client.table(self._table_name).insert(clean_data).execute()
                     if retry_res.data and len(retry_res.data) > 0:
+                        logger.info(
+                            "[SUPABASE DB RETRY SUCCESS] Registro guardado sin user_id en '%s' (ID: %s)",
+                            self._table_name,
+                            retry_res.data[0].get("id"),
+                        )
                         return retry_res.data[0]
                     return clean_data
                 except Exception as retry_err:
-                    logger.warning("Retry without user_id failed: %s", retry_err)
+                    logger.error(
+                        "[SUPABASE DB ERROR] Reintento de inserción sin user_id falló en '%s': %s",
+                        self._table_name,
+                        retry_err,
+                    )
 
-            logger.warning("Supabase insert returned notice (%s). Returning local record.", exc)
+            logger.error(
+                "[SUPABASE DB INSERT ERROR] Fallo al insertar registro en la tabla '%s'. Detalle: %s. "
+                "Si el código es 42501 (RLS policy violation), verifica las políticas RLS en Supabase "
+                "o configura SUPABASE_SERVICE_ROLE_KEY.",
+                self._table_name,
+                exc,
+                exc_info=True,
+            )
             fallback = dict(record_data)
             if "id" not in fallback:
                 fallback["id"] = str(uuid.uuid4())
@@ -82,7 +101,10 @@ class SupabaseTriageRepository(BaseTriageRepository):
                     )
                     return user_filtered.data or []
                 except Exception as filter_err:
-                    logger.warning("User-specific history filter notice: %s. Using general history.", filter_err)
+                    logger.warning(
+                        "[SUPABASE DB NOTICE] Filtro por user_id notice: %s. Usando consulta general.",
+                        filter_err,
+                    )
 
             response = (
                 self._client.table(self._table_name)
@@ -93,7 +115,12 @@ class SupabaseTriageRepository(BaseTriageRepository):
             )
             return response.data or []
         except Exception as exc:
-            logger.warning("Failed to fetch records from Supabase: %s", exc)
+            logger.error(
+                "[SUPABASE DB SELECT ERROR] Fallo al obtener registros de '%s': %s",
+                self._table_name,
+                exc,
+                exc_info=True,
+            )
             return []
 
     def _sync_get_by_id(self, record_id: str) -> Optional[Dict[str, Any]]:
@@ -110,7 +137,13 @@ class SupabaseTriageRepository(BaseTriageRepository):
                 return response.data[0]
             return None
         except Exception as exc:
-            logger.warning("Failed to fetch record by id %s: %s", record_id, exc)
+            logger.error(
+                "[SUPABASE DB SELECT ERROR] Fallo al obtener registro con id '%s' de '%s': %s",
+                record_id,
+                self._table_name,
+                exc,
+                exc_info=True,
+            )
             return None
 
     async def save_triage_record(self, record_data: Dict[str, Any]) -> Dict[str, Any]:

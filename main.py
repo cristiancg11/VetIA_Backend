@@ -1,26 +1,54 @@
 """Main application entrypoint for VetIA / PetEmergency FastAPI service."""
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.auth import check_supabase_health
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
+from app.core.supabase import get_supabase_client
 from app.core.thread_pool import get_thread_pool_manager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("vetia.main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Lifespan context manager handling application startup and graceful shutdown.
-    Initializes the worker ThreadPoolExecutor and shuts it down cleanly upon exit.
+    Initializes the worker ThreadPoolExecutor, validates Supabase connection,
+    and shuts it down cleanly upon exit.
     """
     settings = get_settings()
     thread_pool = get_thread_pool_manager()
     thread_pool.initialize(max_workers=settings.MAX_THREAD_WORKERS)
+    logger.info("Iniciando %s en ambiente: %s", settings.PROJECT_NAME, settings.ENVIRONMENT)
+
+    # Validate Supabase connection on startup
+    try:
+        supabase = get_supabase_client(settings=settings)
+        logger.info(
+            "[STARTUP] Supabase client configurado exitosamente hacia: %s",
+            settings.SUPABASE_URL,
+        )
+    except Exception as exc:
+        logger.error(
+            "[STARTUP ERROR] Error inicializando Supabase al iniciar la app: %s",
+            exc,
+            exc_info=True,
+        )
+
     yield
+
     thread_pool.shutdown(wait=True)
+    logger.info("Apagando %s...", settings.PROJECT_NAME)
 
 
 settings = get_settings()
@@ -33,12 +61,14 @@ app = FastAPI(
 )
 
 # Configure Cross-Origin Resource Sharing (CORS)
+# Explicitly allowing OPTIONS and all standard HTTP methods from localhost:5173
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Mount API Routers
@@ -54,6 +84,16 @@ def health_check() -> dict:
         "version": "1.0.0",
         "environment": settings.ENVIRONMENT,
     }
+
+
+# Convenience alias for top-level /health/supabase endpoint
+app.add_api_route(
+    "/health/supabase",
+    check_supabase_health,
+    methods=["GET"],
+    tags=["Health"],
+    summary="Health probe for Supabase connectivity (root alias)",
+)
 
 
 if __name__ == "__main__":
