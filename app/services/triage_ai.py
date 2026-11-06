@@ -37,12 +37,10 @@ _GLOBAL_TRIAGE_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
 # Ordered cascade of vision-compatible models prioritized for resilience
 MODELS_CASCADE: List[str] = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
     "gemini-1.5-flash",
-    "gemini-3-flash-preview",
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-2.0-flash-exp",
+    "gemini-1.5-pro",
 ]
 
 # Ultra-low latency timeouts and retry delays
@@ -232,11 +230,15 @@ class MultimodalTriageAIService:
         self._settings = settings or get_settings()
         self._thread_pool_manager = thread_pool_manager or get_thread_pool_manager()
         self._api_key = (os.getenv("GEMINI_API_KEY") or self._settings.GEMINI_API_KEY or "").strip()
-        self._primary_model = (os.getenv("GEMINI_MODEL") or self._settings.GEMINI_MODEL or "gemini-2.5-flash").strip()
+        env_model = os.getenv("GEMINI_MODEL")
+        if env_model and env_model.strip() and "2.5" not in env_model:
+            self._primary_model = env_model.strip()
+        else:
+            self._primary_model = "gemini-1.5-flash"
 
-        # Prioritize primary model if set, followed by MODELS_CASCADE (deduplicating preserving order)
+        # Prioritize gemini-1.5-flash first, followed by MODELS_CASCADE
         cascade = [self._primary_model] + [m for m in MODELS_CASCADE if m != self._primary_model]
-        self.models_cascade = cascade
+        self.models_cascade = list(dict.fromkeys(cascade))
 
         self._client: Optional[genai.Client] = None
         if self._api_key and self._api_key != "your_gemini_api_key_here":
