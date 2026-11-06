@@ -45,6 +45,10 @@ MODELS_CASCADE: List[str] = [
     "gemini-3.5-flash",
 ]
 
+# Ultra-low latency timeouts and retry delays
+MODEL_TIMEOUT_SECONDS: float = 8.0
+RETRY_DELAY_SECONDS: float = 0.5
+
 
 def is_transient_overload_error(exc: Exception) -> bool:
     """Detects 503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED, rate limits, or spikes in server demand."""
@@ -364,27 +368,54 @@ class MultimodalTriageAIService:
                     config=config,
                 )
 
-            # Intento 1 con el modelo actual
+            # Intento 1 con el modelo actual (límite estricto de 8 segundos)
             try:
                 logger.info("[TRIAGE AI] Ejecutando inferencia multimodal en Gemini con modelo: %s", model_name)
-                response = await self._thread_pool_manager.run_in_thread(_invoke_gemini, model_name)
+                response = await asyncio.wait_for(
+                    self._thread_pool_manager.run_in_thread(_invoke_gemini, model_name),
+                    timeout=MODEL_TIMEOUT_SECONDS,
+                )
                 return self._process_analysis_response(response, model_name, normalized_species, peso_kg, descripcion)
+
+            except (asyncio.TimeoutError, TimeoutError):
+                last_error = TimeoutError(f"Modelo {model_name} excedió tiempo límite de {MODEL_TIMEOUT_SECONDS}s")
+                print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                logger.warning(
+                    "[TRIAGE AI TIMEOUT] Modelo %s superó el límite de 8s sin responder. Conmutando de inmediato a %s...",
+                    model_name,
+                    next_model,
+                )
+                continue
 
             except Exception as exc:
                 last_error = exc
                 if is_transient_overload_error(exc):
                     logger.warning(
-                        "[TRIAGE AI] Modelo %s con alta demanda/error transitorio (%s). Reintentando en 1.5s...",
+                        "[TRIAGE AI] Modelo %s con alta demanda/error transitorio (%s). Reintentando en %.1fs...",
                         model_name,
                         exc,
+                        RETRY_DELAY_SECONDS,
                     )
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-                    # Intento 2 (Reintento tras espera de 1.5s)
+                    # Intento 2 (Reintento tras espera corta de 0.5s con timeout de 8s)
                     try:
                         logger.info("[TRIAGE AI] Reintentando inferencia multimodal con modelo: %s", model_name)
-                        response = await self._thread_pool_manager.run_in_thread(_invoke_gemini, model_name)
+                        response = await asyncio.wait_for(
+                            self._thread_pool_manager.run_in_thread(_invoke_gemini, model_name),
+                            timeout=MODEL_TIMEOUT_SECONDS,
+                        )
                         return self._process_analysis_response(response, model_name, normalized_species, peso_kg, descripcion)
+
+                    except (asyncio.TimeoutError, TimeoutError):
+                        last_error = TimeoutError(f"Reintento de modelo {model_name} excedió tiempo límite de {MODEL_TIMEOUT_SECONDS}s")
+                        print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                        logger.warning(
+                            "[TRIAGE AI TIMEOUT] Reintento de modelo %s superó límite de 8s. Conmutando a %s...",
+                            model_name,
+                            next_model,
+                        )
+                        continue
 
                     except Exception as retry_exc:
                         last_error = retry_exc
@@ -475,28 +506,46 @@ class MultimodalTriageAIService:
                     config=config,
                 )
 
-            # Intento 1
+            # Intento 1 (con límite de 8s)
             try:
                 logger.info("[TRIAGE AI] Reevaluando con Gemini modelo: %s para especie: %s", model_name, target_species)
-                response = await self._thread_pool_manager.run_in_thread(_invoke_confirm, model_name)
+                response = await asyncio.wait_for(
+                    self._thread_pool_manager.run_in_thread(_invoke_confirm, model_name),
+                    timeout=MODEL_TIMEOUT_SECONDS,
+                )
                 raw_text = response.text or ""
                 result_dict = clean_and_parse_json(raw_text)
                 result_dict["triage_id"] = triage_id
                 return ConfirmDiagnosisResponse.model_validate(result_dict)
 
+            except (asyncio.TimeoutError, TimeoutError):
+                last_error = TimeoutError(f"Modelo {model_name} excedió tiempo límite de {MODEL_TIMEOUT_SECONDS}s")
+                print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                logger.warning("[TRIAGE AI TIMEOUT] Confirmación con modelo %s superó límite de 8s. Conmutando a %s...", model_name, next_model)
+                continue
+
             except Exception as exc:
                 last_error = exc
                 if is_transient_overload_error(exc):
-                    logger.warning("[TRIAGE AI] Modelo %s con alta demanda en confirmación. Reintentando en 1.5s...", model_name)
-                    await asyncio.sleep(1.5)
+                    logger.warning("[TRIAGE AI] Modelo %s con alta demanda en confirmación. Reintentando en %.1fs...", model_name, RETRY_DELAY_SECONDS)
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
 
                     try:
                         logger.info("[TRIAGE AI] Reintentando confirmación con modelo: %s", model_name)
-                        response = await self._thread_pool_manager.run_in_thread(_invoke_confirm, model_name)
+                        response = await asyncio.wait_for(
+                            self._thread_pool_manager.run_in_thread(_invoke_confirm, model_name),
+                            timeout=MODEL_TIMEOUT_SECONDS,
+                        )
                         raw_text = response.text or ""
                         result_dict = clean_and_parse_json(raw_text)
                         result_dict["triage_id"] = triage_id
                         return ConfirmDiagnosisResponse.model_validate(result_dict)
+
+                    except (asyncio.TimeoutError, TimeoutError):
+                        last_error = TimeoutError(f"Reintento de confirmación con modelo {model_name} excedió 8s")
+                        print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                        logger.warning("[TRIAGE AI TIMEOUT] Reintento de confirmación con %s superó 8s. Conmutando a %s...", model_name, next_model)
+                        continue
 
                     except Exception as retry_exc:
                         last_error = retry_exc
@@ -572,31 +621,51 @@ class MultimodalTriageAIService:
                     ),
                 )
 
-            # Intento 1
+            # Intento 1 (con límite de 8s)
             try:
                 logger.info("[TRIAGE AI CHAT] Consultando chat con Gemini modelo: %s para especie: %s", model_name, species)
-                response = await self._thread_pool_manager.run_in_thread(_invoke_chat, model_name)
+                response = await asyncio.wait_for(
+                    self._thread_pool_manager.run_in_thread(_invoke_chat, model_name),
+                    timeout=MODEL_TIMEOUT_SECONDS,
+                )
                 if response.text and response.text.strip():
                     return EmergencyChatResponse(
                         triage_id=triage_id,
                         reply=response.text.strip(),
                         timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     )
+
+            except (asyncio.TimeoutError, TimeoutError):
+                last_error = TimeoutError(f"Chat con modelo {model_name} excedió tiempo límite de {MODEL_TIMEOUT_SECONDS}s")
+                print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                logger.warning("[TRIAGE AI TIMEOUT] Chat con modelo %s superó límite de 8s. Conmutando a %s...", model_name, next_model)
+                continue
+
             except Exception as exc:
                 last_error = exc
                 if is_transient_overload_error(exc):
-                    logger.warning("[TRIAGE AI CHAT] Modelo %s saturado en chat. Reintentando en 1.5s...", model_name)
-                    await asyncio.sleep(1.5)
+                    logger.warning("[TRIAGE AI CHAT] Modelo %s saturado en chat. Reintentando en %.1fs...", model_name, RETRY_DELAY_SECONDS)
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
 
                     try:
                         logger.info("[TRIAGE AI CHAT] Reintentando chat con modelo: %s", model_name)
-                        response = await self._thread_pool_manager.run_in_thread(_invoke_chat, model_name)
+                        response = await asyncio.wait_for(
+                            self._thread_pool_manager.run_in_thread(_invoke_chat, model_name),
+                            timeout=MODEL_TIMEOUT_SECONDS,
+                        )
                         if response.text and response.text.strip():
                             return EmergencyChatResponse(
                                 triage_id=triage_id,
                                 reply=response.text.strip(),
                                 timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                             )
+
+                    except (asyncio.TimeoutError, TimeoutError):
+                        last_error = TimeoutError(f"Reintento de chat con modelo {model_name} excedió 8s")
+                        print(f"[TRIAGE AI] Modelo {model_name} excedió tiempo límite (8s). Conmutando a {next_model}...")
+                        logger.warning("[TRIAGE AI TIMEOUT] Reintento de chat con %s superó 8s. Conmutando a %s...", model_name, next_model)
+                        continue
+
                     except Exception as retry_exc:
                         last_error = retry_exc
                         if is_transient_overload_error(retry_exc):
