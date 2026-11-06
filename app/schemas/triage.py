@@ -11,7 +11,7 @@ class DiagnosticQuestion(BaseModel):
     """Pregunta de descarte clínico para confirmación diagnóstica."""
     id: str = Field(..., description="Identificador único de la pregunta (ej. q1, q2)")
     question: str = Field(..., description="Texto de la pregunta orientada al tutor")
-    type: Literal["yes_no", "multiple_choice", "text"] = Field(
+    type: Optional[str] = Field(
         default="yes_no",
         description="Tipo de respuesta requerida (yes_no)",
     )
@@ -74,7 +74,7 @@ class TriageAnalysisResponse(BaseModel):
         description="Medicamentos o acciones estrictamente prohibidas y contraindicadas (ej. NO inducir vómito, NO dar ibuprofeno)",
     )
     estimated_fluid_deficit_percent: float = Field(
-        ...,
+        default=0.0,
         description="Porcentaje numérico estimado de déficit hídrico o deshidratación (0.0 a 15.0%)",
     )
     triage_id: str = Field(
@@ -370,7 +370,8 @@ class EmergencyChatRequest(BaseModel):
     """Payload para el asistente conversacional de primeros auxilios y triaje."""
 
     triage_id: str = Field(..., description="Identificador del caso de triaje")
-    message: str = Field(..., description="Pregunta o consulta urgente del tutor")
+    message: Optional[str] = Field(None, description="Pregunta o consulta urgente del tutor")
+    user_message: Optional[str] = Field(None, description="Alias para la consulta del tutor")
     context: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Contexto clínico opcional del paciente (especie, urgencia, hallazgos)",
@@ -379,6 +380,10 @@ class EmergencyChatRequest(BaseModel):
         default_factory=list,
         description="Historial previo de mensajes de la conversación",
     )
+
+    def get_query(self) -> str:
+        """Returns the non-empty user query from either user_message or message."""
+        return (self.user_message or self.message or "").strip()
 
 
 class EmergencyChatResponse(BaseModel):

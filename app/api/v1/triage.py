@@ -1,6 +1,5 @@
-"""FastAPI endpoints for Multimodal Veterinary Triage, Confirmation Diagnosis, and Emergency Chat powered by Google Gemini."""
+"""FastAPI endpoints for Multimodal Veterinary Triage, Confirmation Diagnosis, and Emergency Chat powered strictly by Google Gemini."""
 
-import datetime
 import logging
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -58,7 +57,7 @@ def _clean_float(val: Any) -> Optional[float]:
 
 
 # =============================================================================
-# 1. ANALISIS DE TRIAJE MULTIMODAL CON GENERACION DE PREGUNTAS DE DESCARTE
+# 1. ANALISIS DE TRIAJE MULTIMODAL ESTRICTO CON GOOGLE GEMINI (SIN MOCKS)
 # =============================================================================
 @triage_router.post(
     "/triage/analyze",
@@ -67,8 +66,8 @@ def _clean_float(val: Any) -> Optional[float]:
     summary="Análisis clínico multimodal de triaje veterinario con Gemini",
     description=(
         "Recibe una fotografía de la lesión o animal junto con datos clínicos del paciente. "
-        "Ejecuta inferencia multimodal con Gemini Flash y retorna la evaluación estructurada "
-        "conforme al Manchester Triage System, incluyendo 3 a 4 preguntas de descarte clínico."
+        "Ejecuta inferencia multimodal real con Gemini Flash pasando los bytes de la imagen y retorna "
+        "la evaluación estructurada conforme a la especie evaluada."
     ),
 )
 async def analyze_veterinary_triage(
@@ -106,14 +105,13 @@ async def analyze_veterinary_triage(
     ),
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
 ) -> TriageAnalysisResponse:
-    """Execute complete multimodal veterinary triage workflow with robust parameter handling."""
+    """Execute complete multimodal veterinary triage workflow with real Gemini inference."""
     # Resolve parameters supporting both English and Spanish aliases
     target_species = _clean_str(species) or _clean_str(especie) or "Mascota"
     weight_val = _clean_float(weight_kg) or _clean_float(peso_kg) or 10.0
     target_weight = weight_val if weight_val > 0 else 10.0
     target_description = _clean_str(description) or _clean_str(descripcion) or "Evaluación de condición general del paciente"
 
-    # Real-time console print for developer visibility in Uvicorn terminal
     print(f"--> [TRIAGE REQUEST] Recibida imagen: {image.filename}, Especie: {target_species}")
     logger.info(
         "--> [TRIAGE REQUEST] Recibida imagen: %s, Especie: %s, Peso: %s kg, User: %s",
@@ -138,9 +136,7 @@ async def analyze_veterinary_triage(
     if mime_type.lower() not in ALLOWED_IMAGE_TYPES:
         mime_type = "image/jpeg"
 
-    print(f"[TRIAGE AI] Analizando imagen de {len(contents)} bytes para especie: {target_species}")
-
-    # Execute Multimodal Ingestion and Inference
+    # Execute Multimodal Ingestion and Inference strictly via Gemini
     try:
         assessment: TriageAnalysisResponse = await triage_service.analyze_triage(
             image_bytes=contents,
@@ -159,16 +155,17 @@ async def analyze_veterinary_triage(
         )
         return assessment
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(
-            "[TRIAGE UNEXPECTED ERROR] Fallo durante la inferencia: %s. Activando motor clínico de contingencia.",
+            "[TRIAGE ERROR] Error durante la inferencia de Gemini: %s",
             exc,
             exc_info=True,
         )
-        return triage_service._generate_rule_based_fallback(
-            especie=target_species,
-            peso_kg=target_weight,
-            descripcion=target_description,
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en inferencia multimodal de Gemini: {str(exc)}",
         )
 
 
@@ -190,7 +187,7 @@ async def confirm_veterinary_diagnosis(
     payload: ConfirmDiagnosisRequest,
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
 ) -> ConfirmDiagnosisResponse:
-    """Execute clinical re-evaluation of triage urgency based on rule-out questionnaire responses."""
+    """Execute clinical re-evaluation of triage urgency via Gemini based on rule-out responses."""
     print(f"--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: {payload.triage_id}, Respuestas: {payload.answers}")
     logger.info(
         "--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: %s, Especie: %s, Respuestas: %s",
@@ -218,19 +215,17 @@ async def confirm_veterinary_diagnosis(
         )
         return confirmation
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(
-            "[CONFIRM DIAGNOSIS ERROR] Error durante la confirmación: %s. Activando contingencia determinista.",
+            "[CONFIRM DIAGNOSIS ERROR] Error durante la confirmación: %s",
             exc,
             exc_info=True,
         )
-        return triage_service._generate_rule_based_confirmation(
-            triage_id=payload.triage_id,
-            answers=payload.answers,
-            initial_symptoms=payload.initial_symptoms,
-            species=payload.species,
-            initial_urgency_level=payload.initial_urgency_level,
-            questions=payload.questions,
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en confirmación diagnóstica de Gemini: {str(exc)}",
         )
 
 
@@ -243,7 +238,7 @@ async def confirm_veterinary_diagnosis(
     status_code=status.HTTP_200_OK,
     summary="Chat Asistente de Urgencias y Primeros Auxilios",
     description=(
-        "Recibe triage_id, message del tutor y el contexto del triaje actual. "
+        "Recibe triage_id, user_message (o message) del tutor y el contexto del triaje actual. "
         "Responde con instrucciones precisas y empáticas de primeros auxilios sin emitir "
         "recetas farmacológicas no autorizadas."
     ),
@@ -252,36 +247,39 @@ async def triage_emergency_chat(
     payload: EmergencyChatRequest,
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
 ) -> EmergencyChatResponse:
-    """Process contextual emergency first-aid questions grounded on clinical triage context."""
-    print(f"--> [EMERGENCY CHAT REQUEST] Triage ID: {payload.triage_id}, Mensaje: {payload.message[:60]}")
+    """Process contextual emergency first-aid questions grounded on clinical triage context via Gemini."""
+    query_text = payload.get_query()
+    if not query_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El campo 'user_message' o 'message' es obligatorio.",
+        )
+
+    print(f"--> [EMERGENCY CHAT REQUEST] Triage ID: {payload.triage_id}, Mensaje: {query_text[:60]}")
     logger.info(
         "--> [EMERGENCY CHAT REQUEST] Triage ID: %s, Mensaje: %s",
         payload.triage_id,
-        payload.message[:80],
+        query_text[:80],
     )
 
     try:
         reply: EmergencyChatResponse = await triage_service.emergency_chat(
             triage_id=payload.triage_id,
-            message=payload.message,
+            message=query_text,
             context=payload.context,
             conversation_history=payload.conversation_history,
         )
         return reply
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(
-            "[EMERGENCY CHAT ERROR] Error en chat de emergencias: %s. Retornando respuesta de contingencia.",
+            "[EMERGENCY CHAT ERROR] Error en chat de emergencias: %s",
             exc,
             exc_info=True,
         )
-        return EmergencyChatResponse(
-            triage_id=payload.triage_id,
-            reply=triage_service._generate_rule_based_chat_reply(
-                triage_id=payload.triage_id,
-                message=payload.message,
-                context=payload.context,
-                conversation_history=payload.conversation_history,
-            ),
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en chat de emergencias de Gemini: {str(exc)}",
         )
