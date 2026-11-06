@@ -387,13 +387,14 @@ class MultimodalTriageAIService:
                 )
                 continue
 
-            except Exception as exc:
-                last_error = exc
-                if is_transient_overload_error(exc):
+            except Exception as e:
+                last_error = e
+                print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(e).__name__} | Mensaje: {str(e)}\n")
+                if is_transient_overload_error(e):
                     logger.warning(
                         "[TRIAGE AI] Modelo %s con alta demanda/error transitorio (%s). Reintentando en %.1fs...",
                         model_name,
-                        exc,
+                        e,
                         RETRY_DELAY_SECONDS,
                     )
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
@@ -419,6 +420,7 @@ class MultimodalTriageAIService:
 
                     except Exception as retry_exc:
                         last_error = retry_exc
+                        print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(retry_exc).__name__} | Mensaje: {str(retry_exc)}\n")
                         if is_transient_overload_error(retry_exc):
                             print(f"[TRIAGE AI] Modelo {model_name} saturado (503). Conmutando a {next_model}...")
                             logger.warning(
@@ -524,9 +526,10 @@ class MultimodalTriageAIService:
                 logger.warning("[TRIAGE AI TIMEOUT] Confirmación con modelo %s superó límite de 8s. Conmutando a %s...", model_name, next_model)
                 continue
 
-            except Exception as exc:
-                last_error = exc
-                if is_transient_overload_error(exc):
+            except Exception as e:
+                last_error = e
+                print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(e).__name__} | Mensaje: {str(e)}\n")
+                if is_transient_overload_error(e):
                     logger.warning("[TRIAGE AI] Modelo %s con alta demanda en confirmación. Reintentando en %.1fs...", model_name, RETRY_DELAY_SECONDS)
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
 
@@ -549,6 +552,7 @@ class MultimodalTriageAIService:
 
                     except Exception as retry_exc:
                         last_error = retry_exc
+                        print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(retry_exc).__name__} | Mensaje: {str(retry_exc)}\n")
                         if is_transient_overload_error(retry_exc):
                             print(f"[TRIAGE AI] Modelo {model_name} saturado (503). Conmutando a {next_model}...")
                             logger.warning("[TRIAGE AI] Modelo %s saturado (503). Conmutando a %s...", model_name, next_model)
@@ -641,9 +645,10 @@ class MultimodalTriageAIService:
                 logger.warning("[TRIAGE AI TIMEOUT] Chat con modelo %s superó límite de 8s. Conmutando a %s...", model_name, next_model)
                 continue
 
-            except Exception as exc:
-                last_error = exc
-                if is_transient_overload_error(exc):
+            except Exception as e:
+                last_error = e
+                print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(e).__name__} | Mensaje: {str(e)}\n")
+                if is_transient_overload_error(e):
                     logger.warning("[TRIAGE AI CHAT] Modelo %s saturado en chat. Reintentando en %.1fs...", model_name, RETRY_DELAY_SECONDS)
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
 
@@ -668,6 +673,7 @@ class MultimodalTriageAIService:
 
                     except Exception as retry_exc:
                         last_error = retry_exc
+                        print(f"\n❌ [ERROR CRÍTICO GEMINI API]: Tipo: {type(retry_exc).__name__} | Mensaje: {str(retry_exc)}\n")
                         if is_transient_overload_error(retry_exc):
                             print(f"[TRIAGE AI] Modelo {model_name} saturado (503). Conmutando a {next_model}...")
                             logger.warning("[TRIAGE AI] Modelo %s saturado (503). Conmutando a %s...", model_name, next_model)
