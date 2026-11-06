@@ -1,13 +1,17 @@
 """Application configuration module using Pydantic Settings."""
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_FILE_PATH = BASE_DIR / ".env"
+
 
 
 class Settings(BaseSettings):
@@ -65,6 +69,13 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    """Provide a cached singleton instance of application settings."""
-    return Settings()
+    """Provide a cached singleton instance of application settings with Gemini API Key validation."""
+    settings = Settings()
+    if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.strip() in ("", "your_gemini_api_key_here"):
+        logger.warning(
+            "[CONFIG WARNING] La variable 'GEMINI_API_KEY' no está configurada o se encuentra vacía en el archivo .env. "
+            "El servicio de triaje operará con el motor clínico de respaldo y contingencia."
+        )
+    return settings
+
 

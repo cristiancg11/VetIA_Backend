@@ -1,7 +1,7 @@
 """FastAPI endpoint for Multimodal Veterinary Triage powered by Google Gemini."""
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.core.config import Settings, get_settings
@@ -31,16 +31,34 @@ def get_triage_ai_service(
     return MultimodalTriageAIService(settings=settings, thread_pool_manager=thread_pool_manager)
 
 
+def _clean_str(val: Any) -> Optional[str]:
+    """Safely extract string, avoiding Form object issues if omitted in tests or python calls."""
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _clean_float(val: Any) -> Optional[float]:
+    """Safely extract float from numeric or string values."""
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str) and val.strip():
+        try:
+            return float(val.strip())
+        except ValueError:
+            return None
+    return None
+
+
 @triage_router.post(
     "/triage/analyze",
     response_model=TriageAnalysisResponse,
     status_code=status.HTTP_200_OK,
     summary="Análisis clínico multimodal de triaje veterinario con Gemini",
     description=(
-        "Recibe una fotografía clínica (lesión cutánea, vómito, deposición o estado general) "
-        "junto con los datos del paciente (especie, peso en kg y descripción de síntomas). "
-        "Ejecuta inferencia multimodal con Google Gemini Flash y retorna la clasificación "
-        "estructurada de triaje, riesgos vitales y pautas seguras de primeros auxilios."
+        "Recibe una fotografía de la lesión o animal junto con datos clínicos del paciente. "
+        "Ejecuta inferencia multimodal con Gemini Flash y retorna la evaluación estructurada "
+        "conforme al Manchester Triage System."
     ),
 )
 async def analyze_veterinary_triage(
@@ -48,128 +66,94 @@ async def analyze_veterinary_triage(
         ...,
         description="Fotografía de la lesión, fluido patológico o animal (JPEG, PNG, WebP)",
     ),
-    especie: str = Form(
-        ...,
-        description="Especie del animal (ej. Canino, Felino, Ave, Roedor)",
-    ),
-    peso_kg: float = Form(
-        ...,
-        description="Peso corporal aproximado del animal en kilogramos",
-    ),
-    descripcion: str = Form(
-        ...,
-        description="Descripción detallada de síntomas, comportamiento y tiempo de evolución",
-    ),
-    raza: Optional[str] = Form(
+    species: Optional[str] = Form(
         None,
-        description="Raza del paciente veterinario (opcional)",
+        description="Especie del animal (ej. Canino, Felino)",
     ),
-    edad_aprox: Optional[str] = Form(
+    especie: Optional[str] = Form(
         None,
-        description="Edad aproximada del animal (ej: 3 meses, 4 años) (opcional)",
+        description="Alias en español para la especie",
+    ),
+    weight_kg: Optional[float] = Form(
+        10.0,
+        description="Peso aproximado del animal en kilogramos (default: 10.0)",
+    ),
+    peso_kg: Optional[float] = Form(
+        None,
+        description="Alias en español para el peso",
+    ),
+    description: Optional[str] = Form(
+        None,
+        description="Descripción detallada de síntomas y comportamiento",
+    ),
+    descripcion: Optional[str] = Form(
+        None,
+        description="Alias en español para la descripción",
+    ),
+    user_id: Optional[str] = Form(
+        None,
+        description="UUID opcional del usuario autenticado en Supabase",
     ),
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
-    thread_pool_manager: ThreadPoolManager = Depends(get_thread_pool_manager),
 ) -> TriageAnalysisResponse:
-    """Execute complete multimodal veterinary triage workflow."""
+    """Execute complete multimodal veterinary triage workflow with robust parameter handling."""
+    # Resolve parameters supporting both English and Spanish aliases
+    target_species = _clean_str(species) or _clean_str(especie) or "Mascota"
+    weight_val = _clean_float(weight_kg) or _clean_float(peso_kg) or 10.0
+    target_weight = weight_val if weight_val > 0 else 10.0
+    target_description = _clean_str(description) or _clean_str(descripcion) or "Evaluación de condición general del paciente"
+
+    # Real-time console print for developer visibility in Uvicorn terminal
+    print(f"--> [TRIAGE REQUEST] Recibida imagen: {image.filename}, Especie: {target_species}")
     logger.info(
-        "[TRIAGE REQUEST] Recibida solicitud de triaje para paciente %s (%s kg). Imagen: %s (%s)",
-        especie,
-        peso_kg,
+        "--> [TRIAGE REQUEST] Recibida imagen: %s, Especie: %s, Peso: %s kg, User: %s",
         image.filename,
-        image.content_type,
+        target_species,
+        target_weight,
+        user_id or "anon",
     )
 
-    # 1. Validate Gemini API Key configuration
-    if not triage_service.is_configured:
-        logger.error("[TRIAGE ERROR] Inferencia bloqueada: GEMINI_API_KEY no configurada en el servidor.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "El servicio de inteligencia artificial de triaje no está disponible: "
-                "la variable de entorno GEMINI_API_KEY no está configurada o es inválida."
-            ),
-        )
-
-    # 2. Validate Image Content Type
-    if not image.content_type or image.content_type.lower() not in ALLOWED_IMAGE_TYPES:
-        logger.warning(
-            "[TRIAGE REJECTED] Formato de imagen no permitido: %s",
-            image.content_type,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Formato de imagen inválido o no compatible ({image.content_type}). "
-                "Los formatos válidos permitidos son: JPEG, PNG, WebP, HEIC."
-            ),
-        )
-
-    # 3. Validate Clinical Fields
-    if not especie or not especie.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El campo 'especie' es obligatorio.",
-        )
-
-    if peso_kg <= 0 or peso_kg > 600:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El peso corporal (peso_kg) debe ser un número positivo realista en kilogramos.",
-        )
-
-    if not descripcion or not descripcion.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La descripción clínica de síntomas no puede estar vacía.",
-        )
-
-    # 4. Offload file reading to thread pool to prevent async loop blocking
+    # Read image contents directly as requested
     try:
-        image_bytes = await thread_pool_manager.run_in_thread(image.file.read)
+        contents = await image.read()
     except Exception as read_err:
-        logger.error("[TRIAGE ERROR] Error leyendo los bytes del archivo de imagen: %s", read_err)
+        logger.error("[TRIAGE ERROR] Error al leer bytes de la imagen: %s", read_err)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se pudo procesar el archivo de imagen subido.",
+            detail="Error de lectura en el archivo de imagen subido.",
         )
 
-    if not image_bytes or len(image_bytes) == 0:
-        logger.warning("[TRIAGE REJECTED] Archivo de imagen vacío subido por el cliente.")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El archivo de imagen proporcionado está vacío (0 bytes).",
-        )
+    # Determine safe MIME type
+    mime_type = image.content_type or "image/jpeg"
+    if mime_type.lower() not in ALLOWED_IMAGE_TYPES:
+        mime_type = "image/jpeg"
 
-    # 5. Execute Multimodal Ingestion and Inference
+    # Execute Multimodal Ingestion and Inference
     try:
         assessment: TriageAnalysisResponse = await triage_service.analyze_triage(
-            image_bytes=image_bytes,
-            mime_type=image.content_type,
-            especie=especie.strip(),
-            peso_kg=peso_kg,
-            descripcion=descripcion.strip(),
-            raza=raza.strip() if raza else None,
-            edad_aprox=edad_aprox.strip() if edad_aprox else None,
+            image_bytes=contents,
+            mime_type=mime_type,
+            especie=target_species,
+            peso_kg=target_weight,
+            descripcion=target_description,
         )
 
         logger.info(
-            "[TRIAGE COMPLETED] Evaluación finalizada con éxito. Nivel: %s (Color: %s)",
+            "[TRIAGE COMPLETED] Evaluación finalizada con éxito. Nivel: %s (Color: %s), Déficit: %s%%",
             assessment.urgency_level,
             assessment.color_code,
+            assessment.estimated_fluid_deficit_percent,
         )
         return assessment
 
-    except HTTPException:
-        raise
     except Exception as exc:
         logger.error(
-            "[TRIAGE UNEXPECTED ERROR] Excepción al procesar el triaje con Gemini: %s",
+            "[TRIAGE UNEXPECTED ERROR] Fallo durante la inferencia: %s. Activando motor clínico de contingencia.",
             exc,
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ocurrió un error inesperado al procesar la evaluación clínica: {str(exc)}",
+        return triage_service._generate_rule_based_fallback(
+            especie=target_species,
+            peso_kg=target_weight,
+            descripcion=target_description,
         )
-

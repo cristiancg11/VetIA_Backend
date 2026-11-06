@@ -61,12 +61,12 @@ app = FastAPI(
 )
 
 # Configure Cross-Origin Resource Sharing (CORS)
-# Explicitly allowing OPTIONS and all standard HTTP methods from localhost:5173
+# Fully open to avoid blocking frontend development on any port/origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "*"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
