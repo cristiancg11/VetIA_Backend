@@ -1,7 +1,7 @@
-"""Pure Google Gemini Multimodal Veterinary Triage Service.
+"""Pure Google Gemini Multimodal Veterinary & Zootechnical Triage Service.
 Zero static mocks or hardcoded template fallbacks:
-Enforces real image byte ingestion, species-specific clinical reasoning,
-and returns raw Gemini AI responses or raises explicit 500 errors on failure.
+Enforces real image byte ingestion and species-specific clinical and zootechnical reasoning
+for livestock (Bovino, Equino, Porcino, Ovino/Caprino, Aves, Cuyes/Conejos) and companion animals.
 """
 
 import json
@@ -23,6 +23,7 @@ from app.schemas.triage import (
     EmergencyChatRequest,
     EmergencyChatResponse,
     TriageAnalysisResponse,
+    normalize_species_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,18 +51,37 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
 
 def build_triage_prompt(species: str, weight_kg: float, description: str) -> str:
-    """Builds clinical multimodal veterinary triage prompt."""
-    return f"""Actúa como Médico Veterinario Especialista en Urgencias.
-Analiza detalladamente esta imagen de un {species} de peso {weight_kg} kg.
-Descripción del tutor: "{description}".
+    """Builds clinical multimodal veterinary and zootechnical triage prompt for rural and companion animals."""
+    normalized = normalize_species_name(species)
+    return f"""Actúa como Médico Veterinario y Zootecnista (MVZ) Especialista en Triage de Urgencias, Medicina de Campo y Producción Agropecuaria.
+Analiza detalladamente esta fotografía clínica/zootécnica de un paciente de especie {normalized} con un peso aproximado de {weight_kg} kg.
+Descripción del productor o tutor: "{description}".
 
-INSTRUCCIONES CLÍNICAS OBLIGATORIAS:
-1. Evalúa según la especie indicada ({species}). NUNCA hables de canino si es un felino.
-2. En visual_findings: describe minuciosamente lo que se observa en la foto real (color exacto, textura, presencia de sangre/moco, postura, signos evidentes). Sé detallado y exhaustivo.
-3. En presumptive_diagnosis: ofrece un diagnóstico presuntivo clínico fundamentado y profundo (al menos 2 hipótesis explicadas).
-4. En vital_risks: explica qué órganos o funciones biológicas están comprometidas de forma inminente.
-5. En first_aid_actions: lista pasos de soporte inmediato y seguro antes de llegar a la clínica.
-6. En diagnostic_questions: formula 3 preguntas clave de descarte sobre el estado actual del animal.
+DIRECTRICES CLÍNICAS Y FISIOPATOLÓGICAS OBLIGATORIAS POR ESPECIE:
+1. IDENTIFICACIÓN Y FISIOLOGÍA ESPECÍFICA ({normalized}):
+   - Si es BOVINO (Vacas, terneros, novillos): Gran rumiante. Si presenta abdomen distendido o asimétrico en la fosa paralumbar izquierda (ijar), sospechar TIMPANISMO RUMINAL (Meteorismo gaseoso o espumoso, Urgencia ROJA / NARANJA por asfixia inminente por compresión diafragmática). Evaluar también paresia puerperal (vaca caída / hipocalcemia), mastitis hiperaguda o reticuloperitonitis traumática.
+   - Si es EQUINO (Caballos, mulas, asnos): Monogástrico con fermentación en ciego/colon. Si muestra dolor abdominal, pateo de panza, mirarse los flancos, echarse y revolcarse, o sudoración profusa, sospechar SÍNDROME ABDOMINAL AGUDO / CÓLICO EQUINO (Urgencia ROJA INMEDIATA por riesgo letal de torsión, vólvulo o shock endotóxico). Evaluar también laminitis/infosura o laceraciones profundas.
+   - Si es PORCINO (Cerdos de ceba, lechones): Evaluar deshidratación severa por diarreas neonatales/post-destete, síndrome respiratorio o postración con eritema dérmico (erisipela).
+   - Si es OVINO / CAPRINO (Ovejas, corderos, cabras): Pequeños rumiantes. Sospechar enterotoxemia, timpanismo agudo o parasitismo gastrointestinal severo (Haemonchus contortus / anemia de mucosas y signo de mandíbula de botella).
+   - Si son AVES DE CORRAL (Gallinas criollas, pollos): Evaluar a nivel individual y de lote (brotes en lote, coccidiosis, problemas respiratorios, prolapso cloacal). Ajustar pautas a escala avícola.
+   - Si son CUYES / CONEJOS (Explotaciones menores / cunicultura): Monogástricos cecotrofos muy sensibles a estasis gastrointestinal, timpanismo cecal, neumonía aguda o pasteurelosis/salmonelosis en lote. Ajustar volúmenes a gramos o pocos kilogramos.
+   - Si es CANINO / FELINO (Compañía y pastoreo): Razonamiento de pequeños animales (mordeduras de serpiente/depredadores en campo, GDV en caninos, lipidosis hepática u obstrucción uretral en felinos).
+
+2. INSPECCIÓN VISUAL ('visual_findings'):
+   - Describe minuciosamente los elementos visuales observables en la foto (colorimetría, texturas, heridas, mucosas, aspecto de heces o fluidos patológicos, postura antálgica, estado corporal, condición del animal o del lote).
+   - Si la foto presenta limitaciones de visibilidad, explícalo con cautela clínica sin omitir la evaluación.
+
+3. DIAGNÓSTICOS PRESUNTIVOS ('presumptive_diagnosis'):
+   - Ofrece al menos 2 hipótesis clínicas fundamentadas en la fisiopatología estricta de {normalized}.
+
+4. RIESGOS VITALES ('vital_risks'):
+   - Explica con claridad qué órganos o funciones biológicas (cardiopulmonar, ruminal, endotóxica, deshidratación en lote) están en riesgo inminente.
+
+5. PRIMEROS AUXILIOS Y MANEJO EN CAMPO ('first_aid_actions'):
+   - Brinda instrucciones prácticas de manejo rural y soporte seguro antes de la llegada del médico veterinario de campo (ej. descompresión ruminal de emergencia en timpanismo asfixiante, caminar al caballo con cólico y no permitir revolcones, aislar animales sospechosos del lote, hidratación oral, etc.).
+
+6. PREGUNTAS DE DESCARTE CLÍNICO ('diagnostic_questions'):
+   - Formula exactamente 3 a 4 preguntas clave de descarte con respuesta binaria ("yes_no") adaptadas a la especie y producción agropecuaria (ej. ¿Se infló el flanco izquierdo de la panza? ¿El animal puede levantarse por sí mismo o está postrado? ¿El equino patea su abdomen o se tira al suelo? ¿Hay otros animales del mismo corral o lote con síntomas idénticos?).
 
 Responde ÚNICAMENTE en JSON válido con este formato:
 {{
@@ -72,6 +92,7 @@ Responde ÚNICAMENTE en JSON válido con este formato:
   "vital_risks": ["..."],
   "first_aid_actions": ["..."],
   "warnings_contraindications": ["..."],
+  "estimated_fluid_deficit_percent": 5.0,
   "diagnostic_questions": [
     {{"id": "q1", "question": "..."}},
     {{"id": "q2", "question": "..."}},
@@ -83,7 +104,7 @@ Responde ÚNICAMENTE en JSON válido con este formato:
 
 class MultimodalTriageAIService:
     """
-    Pure Multimodal Veterinary Triage AI Service powered strictly by Google Gemini.
+    Pure Multimodal Veterinary & Zootechnical Triage AI Service powered strictly by Google Gemini.
     No hardcoded mocks or canned templates.
     """
 
@@ -100,9 +121,10 @@ class MultimodalTriageAIService:
         # Candidate models prioritized: primary model first, followed by active Gemini Flash models
         self._candidate_models = [
             self._primary_model,
-            "gemini-3.5-flash",
             "gemini-3-flash-preview",
-            "gemini-flash-latest",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
         ]
         # Deduplicate preserving order
         self._candidate_models = list(dict.fromkeys(self._candidate_models))
@@ -112,7 +134,7 @@ class MultimodalTriageAIService:
             try:
                 self._client = genai.Client(
                     api_key=self._api_key,
-                    http_options=types.HttpOptions(timeout=15000),
+                    http_options=types.HttpOptions(timeout=45000),
                 )
                 logger.info(
                     "[TRIAGE AI] Google GenAI Client inicializado. Modelos candidatos: %s",
@@ -131,11 +153,12 @@ class MultimodalTriageAIService:
         descripcion: str,
     ) -> TriageAnalysisResponse:
         """
-        Executes genuine multimodal inference with Google Gemini.
-        Passes the image bytes part and prompt content. Raises on failure (NO mocks).
+        Executes genuine multimodal inference with Google Gemini for livestock and companion animals.
+        Passes real image bytes and prompt content. Raises explicit error on failure (NO mocks).
         """
-        print(f"[TRIAGE AI] Analizando imagen de {len(image_bytes)} bytes para especie: {especie}")
-        logger.info("[TRIAGE AI] Analizando imagen de %d bytes para especie: %s", len(image_bytes), especie)
+        normalized_species = normalize_species_name(especie)
+        print(f"[TRIAGE AI] Analizando imagen de {len(image_bytes)} bytes para especie: {normalized_species}")
+        logger.info("[TRIAGE AI] Analizando imagen de %d bytes para especie: %s", len(image_bytes), normalized_species)
 
         if not self._client or not self._api_key:
             raise RuntimeError(
@@ -151,7 +174,7 @@ class MultimodalTriageAIService:
         )
 
         prompt_text = build_triage_prompt(
-            species=especie,
+            species=normalized_species,
             weight_kg=peso_kg,
             description=descripcion,
         )
@@ -186,13 +209,14 @@ class MultimodalTriageAIService:
 
                 print(f"[TRIAGE AI] Respuesta generada: {result_dict.get('urgency_level')} - {str(result_dict.get('visual_findings', ''))[:80]}...")
                 logger.info(
-                    "[TRIAGE AI SUCCESS] Inferencia exitosa con modelo %s. Urgencia: %s",
+                    "[TRIAGE AI SUCCESS] Inferencia exitosa con modelo %s. Especie: %s, Urgencia: %s",
                     model_name,
+                    normalized_species,
                     result_dict.get("urgency_level"),
                 )
 
                 assessment = TriageAnalysisResponse.model_validate(result_dict)
-                self._save_session(assessment.triage_id, assessment, especie, peso_kg, descripcion)
+                self._save_session(assessment.triage_id, assessment, normalized_species, peso_kg, descripcion)
                 return assessment
 
             except Exception as exc:
@@ -257,7 +281,7 @@ class MultimodalTriageAIService:
     ) -> ConfirmDiagnosisResponse:
         """Executes clinical re-evaluation strictly with Gemini (NO mocks)."""
         session = _GLOBAL_TRIAGE_SESSION_STORE.get(triage_id, {})
-        target_species = species or session.get("species") or "Mascota"
+        target_species = normalize_species_name(species or session.get("species") or "Bovino")
         target_symptoms = initial_symptoms or session.get("initial_symptoms") or "Paciente en urgencias"
         target_urgency = initial_urgency_level or (
             session.get("assessment", {}).get("urgency_level") if session.get("assessment") else "MODERADO"
@@ -266,34 +290,37 @@ class MultimodalTriageAIService:
         if not self._client or not self._api_key:
             raise RuntimeError("GEMINI_API_KEY no está configurada.")
 
-        ans_lines = [f"- Pregunta ID {k}: {'SÍ (Confirmado)' if v else 'NO'}" for k, v in answers.items()]
+        ans_lines = [f"- Pregunta ID {k}: {'SÍ (Confirmado / Positivo)' if v else 'NO (Negativo)'}" for k, v in answers.items()]
         answers_str = "\n".join(ans_lines)
 
-        prompt = f"""Actúa como Médico Veterinario Especialista en Urgencias y Cuidados Críticos.
-Reevalúa de forma definitiva este caso de triaje clínico veterinario:
+        prompt = f"""Actúa como Médico Veterinario y Zootecnista (MVZ) Especialista en Urgencias de Campo y Producción Agropecuaria.
+Reevalúa de forma definitiva este caso de triaje clínico zootécnico:
 - Triage ID: {triage_id}
 - Especie: {target_species}
 - Síntomas iniciales: "{target_symptoms}"
 - Urgencia preliminar: {target_urgency}
 
-Respuestas del tutor al test de descarte clínico:
+Respuestas del productor/tutor al test de descarte clínico:
 {answers_str}
 
-REGLAS OBLIGATORIAS:
+REGLAS DE REEVALUACIÓN AGROPECUARIA:
 1. Reevalúa la urgencia considerando la fisiopatología estricta de {target_species}.
-2. Si el tutor confirma signos de alarma vital (encías blancas/moradas, abdomen duro/doloroso, ingesta de veneno o sangrado activo), ESCALA INMEDIATAMENTE a CRÍTICO / RED.
+2. ESCALADA CRÍTICA INMEDIATA (ROJO / CRITICO):
+   - En BOVINOS o RUMIANTES: Si confirman inflamación del flanco izquierdo (timpanismo ruminal agudo con dificultad respiratoria) o postración sin poder levantarse (vaca caída / paresia puerperal).
+   - En EQUINOS: Si confirman que el caballo patea su panza, mira sus flancos o se tira a revolcarse (cólico equino agudo / síndrome abdominal).
+   - En CUALQUIER ESPECIE: Postración extrema, encías pálidas/cianóticas, sangrado activo profuso o alta mortandad súbita en el lote.
 3. Responde ÚNICAMENTE en JSON válido con este formato:
 {{
   "urgency_level": "CRITICO" | "URGENTE" | "MODERADO" | "LEVE",
   "color_code": "RED" | "ORANGE" | "YELLOW" | "GREEN",
   "is_escalated": true | false,
-  "clinical_reassessment": "Explicación detallada del ajuste o confirmación",
+  "clinical_reassessment": "Explicación detallada del ajuste o confirmación para {target_species}",
   "presumptive_diagnosis": ["...", "..."],
   "vital_risks": ["..."],
   "first_aid_actions": ["..."],
   "warnings_contraindications": ["..."],
   "estimated_fluid_deficit_percent": 5.0,
-  "recommended_facility_type": "Clínica 24 horas con quirófano" | "Consultorio general"
+  "recommended_facility_type": "Atención médico-veterinaria de campo inmediata" | "Clínica 24 horas con quirófano" | "Consultorio general"
 }}
 """
 
@@ -305,7 +332,7 @@ REGLAS OBLIGATORIAS:
         last_error: Optional[Exception] = None
         for model_name in self._candidate_models:
             try:
-                logger.info("[TRIAGE AI] Reevaluando con Gemini modelo: %s", model_name)
+                logger.info("[TRIAGE AI] Reevaluando con Gemini modelo: %s para especie: %s", model_name, target_species)
                 response = self._client.models.generate_content(
                     model=model_name,
                     contents=prompt,
@@ -354,10 +381,13 @@ REGLAS OBLIGATORIAS:
         """Processes emergency chat queries strictly with Gemini (NO mocks)."""
         session = _GLOBAL_TRIAGE_SESSION_STORE.get(triage_id, {})
         full_context = dict(session)
-        if context:
+        if isinstance(context, dict):
             full_context.update(context)
+        elif isinstance(context, str) and context.strip():
+            full_context["extra_notes"] = context.strip()
 
-        species = full_context.get("species") or "Mascota"
+        raw_species = full_context.get("species") or "Mascota"
+        species = normalize_species_name(raw_species)
         assessment = full_context.get("assessment", {})
         urgency = assessment.get("urgency_level") or full_context.get("urgency_level") or "MODERADO"
 
@@ -368,31 +398,32 @@ REGLAS OBLIGATORIAS:
         if conversation_history:
             hist_str = "\n".join([f"{m.role.upper()}: {m.content}" for m in conversation_history[-4:]])
 
-        prompt = f"""Actúa como Asistente Veterinario de Urgencias de VetIA.
-Estás orientando al tutor de una mascota en situación de urgencia.
+        prompt = f"""Actúa como Asistente Veterinario y Zootécnico de Urgencias y Medicina de Campo de VetIA.
+Estás orientando al productor o tutor en una situación de emergencia agropecuaria o clínica.
 
 CONTEXTO DEL CASO:
 - Triage ID: {triage_id}
 - Especie: {species}
 - Nivel de Urgencia: {urgency}
-- Diagnóstico presuntivo: {', '.join(assessment.get('presumptive_diagnosis', [])) if assessment else 'En evaluación'}
+- Diagnóstico presuntivo: {', '.join(assessment.get('presumptive_diagnosis', [])) if assessment else 'En evaluación de campo'}
 Historial previo de conversación:
 {hist_str}
 
-NUEVA CONSULTA DEL TUTOR:
+NUEVA CONSULTA DEL PRODUCTOR/TUTOR:
 "{message}"
 
-DIRECTRICES MÉDICAS:
-1. Responde de forma empática, clara y directa con pautas de soporte y primeros auxilios para {species}.
-2. ESTRICTAMENTE PROHIBIDO emitir recetas farmacológicas no autorizadas ni dosificar medicamentos veterinarios.
-3. ADVIERTE contundentemente que los medicamentos humanos (paracetamol, acetaminofén, ibuprofeno, aspirina) son MORTALES para perros y gatos.
-4. Si el cuadro denota riesgo vital, insiste en el traslado inmediato a urgencias veterinarias.
+DIRECTRICES MÉDICAS Y ZOOTÉCNICAS:
+1. Responde de forma empática, clara, técnica y práctica con pautas de primeros auxilios y manejo de campo para {species}.
+2. Si es un Bovino con timpanismo, explica posturas de alivio (cabeza más alta que la grupa), no dar líquidos por boca si no deglute y preparar trocarización o sonda nasorruminal solo por personal calificado.
+3. Si es un Equino con cólico, indicar caminarlo a paso suave para evitar que se revuelque y lesione, no forzar alimento ni agua fría.
+4. Si son Aves o Cuyes, indicar aislamiento preventivo del lote y abrigo/ventilación adecuada.
+5. ESTRICTAMENTE PROHIBIDO dosificar fármacos sin prescripción médica directa y advertir contra analgésicos humanos tóxicos.
 """
 
         last_error: Optional[Exception] = None
         for model_name in self._candidate_models:
             try:
-                logger.info("[TRIAGE AI CHAT] Consultando chat con Gemini modelo: %s", model_name)
+                logger.info("[TRIAGE AI CHAT] Consultando chat con Gemini modelo: %s para especie: %s", model_name, species)
                 response = self._client.models.generate_content(
                     model=model_name,
                     contents=prompt,

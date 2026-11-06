@@ -11,7 +11,9 @@ from app.schemas.triage import (
     ConfirmDiagnosisResponse,
     EmergencyChatRequest,
     EmergencyChatResponse,
+    SUPPORTED_SPECIES_LIST,
     TriageAnalysisResponse,
+    normalize_species_name,
 )
 from app.services.triage_ai import MultimodalTriageAIService
 
@@ -63,11 +65,13 @@ def _clean_float(val: Any) -> Optional[float]:
     "/triage/analyze",
     response_model=TriageAnalysisResponse,
     status_code=status.HTTP_200_OK,
-    summary="Análisis clínico multimodal de triaje veterinario con Gemini",
+    summary="Análisis clínico multimodal de triaje veterinario y zootécnico con Gemini",
     description=(
         "Recibe una fotografía de la lesión o animal junto con datos clínicos del paciente. "
-        "Ejecuta inferencia multimodal real con Gemini Flash pasando los bytes de la imagen y retorna "
-        "la evaluación estructurada conforme a la especie evaluada."
+        "Soporta especies zootécnicas y rurales (Bovino, Equino, Porcino, Ovino / Caprino, Aves de Corral, Cuyes / Conejos) "
+        "así como animales de compañía (Canino, Felino). "
+        "Ejecuta inferencia multimodal real con Gemini pasando los bytes de la imagen y retorna "
+        "la evaluación estructurada con fisiología y patología específica."
     ),
 )
 async def analyze_veterinary_triage(
@@ -77,15 +81,15 @@ async def analyze_veterinary_triage(
     ),
     species: Optional[str] = Form(
         None,
-        description="Especie del animal (ej. Canino, Felino)",
+        description="Especie del animal (ej. Bovino, Equino, Porcino, Ovino / Caprino, Aves de Corral, Cuyes / Conejos, Canino, Felino)",
     ),
     especie: Optional[str] = Form(
         None,
         description="Alias en español para la especie",
     ),
     weight_kg: Optional[float] = Form(
-        10.0,
-        description="Peso aproximado del animal en kilogramos (default: 10.0)",
+        None,
+        description="Peso aproximado del animal en kilogramos (si se omite, se asigna el promedio de la especie)",
     ),
     peso_kg: Optional[float] = Form(
         None,
@@ -93,7 +97,7 @@ async def analyze_veterinary_triage(
     ),
     description: Optional[str] = Form(
         None,
-        description="Descripción detallada de síntomas y comportamiento",
+        description="Descripción detallada de síntomas, signos clínicos y comportamiento",
     ),
     descripcion: Optional[str] = Form(
         None,
@@ -106,10 +110,24 @@ async def analyze_veterinary_triage(
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
 ) -> TriageAnalysisResponse:
     """Execute complete multimodal veterinary triage workflow with real Gemini inference."""
-    # Resolve parameters supporting both English and Spanish aliases
-    target_species = _clean_str(species) or _clean_str(especie) or "Mascota"
-    weight_val = _clean_float(weight_kg) or _clean_float(peso_kg) or 10.0
-    target_weight = weight_val if weight_val > 0 else 10.0
+    # Resolve parameters supporting both English and Spanish aliases with zootechnical normalization
+    raw_species = _clean_str(species) or _clean_str(especie) or "Bovino"
+    target_species = normalize_species_name(raw_species)
+
+    # Species-tailored default weights
+    weight_val = _clean_float(weight_kg) or _clean_float(peso_kg)
+    if weight_val is None or weight_val <= 0:
+        if target_species in ["Aves de Corral", "Cuyes / Conejos"]:
+            target_weight = 1.0
+        elif target_species in ["Bovino", "Equino"]:
+            target_weight = 450.0
+        elif target_species in ["Porcino", "Ovino / Caprino"]:
+            target_weight = 60.0
+        else:
+            target_weight = 10.0
+    else:
+        target_weight = weight_val
+
     target_description = _clean_str(description) or _clean_str(descripcion) or "Evaluación de condición general del paciente"
 
     print(f"--> [TRIAGE REQUEST] Recibida imagen: {image.filename}, Especie: {target_species}")
@@ -188,11 +206,12 @@ async def confirm_veterinary_diagnosis(
     triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
 ) -> ConfirmDiagnosisResponse:
     """Execute clinical re-evaluation of triage urgency via Gemini based on rule-out responses."""
-    print(f"--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: {payload.triage_id}, Respuestas: {payload.answers}")
+    target_species = normalize_species_name(payload.species) if payload.species else None
+    print(f"--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: {payload.triage_id}, Especie: {target_species}, Respuestas: {payload.answers}")
     logger.info(
         "--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: %s, Especie: %s, Respuestas: %s",
         payload.triage_id,
-        payload.species or "N/A",
+        target_species or "N/A",
         payload.answers,
     )
 
@@ -201,7 +220,7 @@ async def confirm_veterinary_diagnosis(
             triage_id=payload.triage_id,
             answers=payload.answers,
             initial_symptoms=payload.initial_symptoms,
-            species=payload.species,
+            species=target_species,
             initial_urgency_level=payload.initial_urgency_level,
             questions=payload.questions,
         )

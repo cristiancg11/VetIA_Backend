@@ -6,6 +6,63 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Clinical and zootechnical species supported by VetIA (Rural & Companion Animals)
+SUPPORTED_SPECIES_LIST = [
+    "Bovino",
+    "Equino",
+    "Porcino",
+    "Ovino / Caprino",
+    "Aves de Corral",
+    "Cuyes / Conejos",
+    "Canino",
+    "Felino",
+]
+
+
+def normalize_species_name(species_input: Optional[str]) -> str:
+    """
+    Normalizes zootechnical, rural, and companion animal species names.
+    Maps common terms (e.g. vaca, caballo, cerdo, oveja, gallina, cuy) to standard categories.
+    """
+    if not species_input or not str(species_input).strip():
+        return "Bovino"
+
+    s = str(species_input).strip().lower()
+
+    # Bovinos (Vacas, terneros, novillos, toros)
+    if any(k in s for k in ["bovin", "vaca", "toro", "terner", "novill", "res", "becerr", "ganado vacuno"]):
+        return "Bovino"
+
+    # Equinos (Caballos, mulas, asnos, yeguas, potros)
+    if any(k in s for k in ["equin", "caball", "yegua", "potr", "mula", "mulo", "asno", "burr"]):
+        return "Equino"
+
+    # Porcinos (Cerdos de ceba, lechones, cerdas)
+    if any(k in s for k in ["porcin", "cerd", "marran", "lech", "cochin", "chanch", "suino"]):
+        return "Porcino"
+
+    # Ovinos y Caprinos (Ovejas, corderos, cabras, chivos)
+    if any(k in s for k in ["ovin", "caprin", "ovej", "corder", "borreg", "cabr", "chiv"]):
+        return "Ovino / Caprino"
+
+    # Aves de corral (Gallinas criollas, pollos, ponedoras, pavos)
+    if any(k in s for k in ["ave", "gallin", "poll", "gall", "pav", "pat", "avicol"]):
+        return "Aves de Corral"
+
+    # Cuyes y Conejos (Explotaciones menores / cunicultura)
+    if any(k in s for k in ["cuy", "cobia", "cobay", "conej", "cunicul"]):
+        return "Cuyes / Conejos"
+
+    # Felinos (Gatos de compañía y control biológico)
+    if any(k in s for k in ["felin", "gat", "minin"]):
+        return "Felino"
+
+    # Caninos (Perros de pastoreo y compañía)
+    if any(k in s for k in ["canin", "perr", "can", "pastor"]):
+        return "Canino"
+
+    return species_input.strip().capitalize()
+
 
 class DiagnosticQuestion(BaseModel):
     """Pregunta de descarte clínico para confirmación diagnóstica."""
