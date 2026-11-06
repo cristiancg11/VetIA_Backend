@@ -43,7 +43,6 @@ Responde ÚNICAMENTE con un JSON válido con la siguiente estructura exacta:
 }
 """
 
-
 VOICE_MODELS_CASCADE = [
     "gemini-1.5-flash",
     "gemini-2.0-flash-exp",
@@ -74,19 +73,27 @@ def is_transient_voice_error(exc: Exception) -> bool:
     return any(token in err_str for token in transient_tokens)
 
 
-def generate_voice_fallback(error_detail: Optional[str] = None) -> Dict[str, Any]:
+def generate_voice_fallback(
+    error_detail: Optional[str] = None,
+    live_transcript: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Generates a deterministic clinical orientation fallback when Gemini audio processing
     encounters 503 high demand, quota limits, or network timeouts.
     Guarantees continuous uptime and structured response without breaking the client.
     """
     logger.warning("[VOICE TRIAGE FAILOVER] Activando respuesta orientativa de contingencia. Motivo: %s", error_detail)
-    return {
-        "transcription": (
+    transcript = (
+        live_transcript.strip()
+        if (live_transcript and live_transcript.strip())
+        else (
             "Audio de campo recibido y almacenado para triaje. "
             "El servicio de transcripción neuronal de voz experimentó alta demanda transitoria; "
             "se presenta evaluación orientativa preventiva para el productor rural."
-        ),
+        )
+    )
+    return {
+        "transcription": transcript,
         "detected_species": None,
         "extracted_symptoms": (
             "Signos clínicos reportados por voz en espera de sincronización completa. "
@@ -111,16 +118,88 @@ def clean_and_parse_voice_json(raw_text: str) -> Dict[str, Any]:
     return json.loads(cleaned)
 
 
-async def process_voice_triage(audio_bytes: bytes, mime_type: str) -> dict:
+async def process_text_transcript_triage(
+    transcript_text: str,
+    client: Optional[genai.Client] = None,
+) -> Dict[str, Any]:
+    """
+    Fallback processor: when audio decoding fails but browser speech recognition
+    captured a live transcript text, uses Gemini fast text model to extract clinical entities.
+    """
+    settings = get_settings()
+    api_key = (os.getenv("GEMINI_API_KEY") or settings.GEMINI_API_KEY or "").strip()
+
+    if client is None:
+        if not api_key or api_key == "your_gemini_api_key_here":
+            return generate_voice_fallback("GEMINI_API_KEY no configurada", live_transcript=transcript_text)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=30000),
+        )
+
+    prompt = f"""El usuario grabó un audio en campo pero la pista de audio presentó limitaciones técnicas.
+A continuación se presenta la transcripción en vivo capturada por el navegador:
+"{transcript_text}"
+
+Analiza este relato clínico veterinario rural y estructura los datos clínicos requeridos.
+
+INSTRUCCIONES CLÍNICAS:
+1. 'transcription': Conserva la transcripción recibida: "{transcript_text}".
+2. 'detected_species': Identifica la especie animal mencionada (bovino, equino, porcino, ovino, canino, felino, aves, cuy). Si no se especifica, null.
+3. 'extracted_symptoms': Sintetiza los signos y síntomas clínicos descritos.
+4. 'estimated_duration': Extrae el tiempo de evolución reportado o null.
+5. 'preliminary_urgency': 'LEVE' | 'MODERADO' | 'URGENTE' | 'CRITICO' según los criterios de triaje.
+
+Responde ÚNICAMENTE en JSON válido con las claves: transcription, detected_species, extracted_symptoms, estimated_duration, preliminary_urgency.
+"""
+
+    config = types.GenerateContentConfig(
+        system_instruction=VOICE_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.8,
+        max_output_tokens=1000,
+        response_mime_type="application/json",
+    )
+
+    for model_name in VOICE_MODELS_CASCADE:
+        try:
+            logger.info("[VOICE TRIAGE] Analizando texto de live_transcript con modelo: %s...", model_name)
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_name,
+                contents=[prompt],
+                config=config,
+            )
+            raw_text = response.text or ""
+            if raw_text.strip():
+                parsed = clean_and_parse_voice_json(raw_text)
+                if not parsed.get("transcription"):
+                    parsed["transcription"] = transcript_text
+                logger.info("[VOICE TRIAGE SUCCESS] live_transcript clasificado exitosamente con %s", model_name)
+                return parsed
+        except Exception as exc:
+            logger.warning("[VOICE TRIAGE] Error al clasificar live_transcript con %s: %s", model_name, exc)
+            continue
+
+    return generate_voice_fallback("Fallo en inferencia de live_transcript", live_transcript=transcript_text)
+
+
+async def process_voice_triage(
+    audio_bytes: bytes,
+    mime_type: str,
+    live_transcript: Optional[str] = None,
+) -> dict:
     """
     Processes rural field audio recording with Google Gemini multimodal capabilities.
-    Features model fallback cascade and failover resilience against 503 / quota errors.
+    Features model fallback cascade, browser live_transcript fallback, and failover resilience.
     """
     settings = get_settings()
     api_key = (os.getenv("GEMINI_API_KEY") or settings.GEMINI_API_KEY or "").strip()
 
     if not api_key or api_key == "your_gemini_api_key_here":
         logger.error("[VOICE TRIAGE] GEMINI_API_KEY no configurada o inválida.")
+        if live_transcript and live_transcript.strip():
+            return generate_voice_fallback("GEMINI_API_KEY no configurada", live_transcript=live_transcript)
         return generate_voice_fallback("GEMINI_API_KEY no configurada")
 
     client = None
@@ -131,6 +210,8 @@ async def process_voice_triage(audio_bytes: bytes, mime_type: str) -> dict:
         )
     except Exception as exc:
         logger.error("[VOICE TRIAGE] Error al inicializar cliente Gemini: %s", exc)
+        if live_transcript and live_transcript.strip():
+            return generate_voice_fallback(str(exc), live_transcript=live_transcript)
         return generate_voice_fallback(str(exc))
 
     audio_part = types.Part.from_bytes(
@@ -182,5 +263,15 @@ async def process_voice_triage(audio_bytes: bytes, mime_type: str) -> dict:
                 logger.warning("[VOICE TRIAGE] Error inesperado en modelo %s: %s", model_name, exc)
                 break
 
-    # Failover: si todos los modelos fallan por 503, cuota o red, retornar fallback determinístico
-    return generate_voice_fallback(str(last_error))
+    # Failover inteligente: si el audio falló pero tenemos live_transcript del navegador, clasificar texto
+    if live_transcript and str(live_transcript).strip():
+        logger.info(
+            "[VOICE TRIAGE FAILOVER] Audio no decodificado. Procesando live_transcript del navegador: '%s'...",
+            live_transcript[:60],
+        )
+        try:
+            return await process_text_transcript_triage(str(live_transcript).strip(), client=client)
+        except Exception as text_exc:
+            logger.error("[VOICE TRIAGE] Error en fallback de texto live_transcript: %s", text_exc)
+
+    return generate_voice_fallback(str(last_error), live_transcript=live_transcript)
