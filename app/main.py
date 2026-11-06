@@ -58,6 +58,7 @@ app = FastAPI(
 )
 
 # Configure Cross-Origin Resource Sharing (CORS)
+# Permit all multipart headers, streaming origins, and HTTP methods for browser voice recording
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
