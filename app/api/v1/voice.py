@@ -2,15 +2,16 @@
 
 import logging
 import os
-from typing import Set
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from typing import Optional, Set
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app.schemas.voice_triage import VoiceTriageResponse
 from app.services.voice_service import process_voice_triage
 
 logger = logging.getLogger(__name__)
 
-voice_router = APIRouter(prefix="", tags=["Voice Clinical Triage"])
+router = APIRouter(prefix="/triage", tags=["Voice Triage"])
+voice_router = router  # Alias for backward compatibility
 
 ALLOWED_AUDIO_EXTENSIONS: Set[str] = {".wav", ".mp3", ".m4a", ".webm", ".ogg", ".aac"}
 ALLOWED_AUDIO_MIME_TYPES: Set[str] = {
@@ -60,26 +61,26 @@ def validate_and_resolve_audio_mime(filename: str, content_type: str) -> str:
     return EXTENSION_TO_MIME.get(ext, "audio/wav")
 
 
-@voice_router.post(
-    "/triage/voice-eval",
+@router.post(
+    "/voice-eval",
     response_model=VoiceTriageResponse,
     status_code=status.HTTP_200_OK,
     summary="Transcriptor y Evaluador por Voz de Campo para Triaje Veterinario",
     description=(
-        "Recibe un archivo de audio (.wav, .mp3, .m4a o .webm) grabado en campo por el usuario o productor rural. "
+        "Recibe un archivo de audio (.wav, .mp3, .m4a o .webm) grabado en campo por el usuario o productor rural, "
+        "junto con una transcripción en vivo opcional provista por el navegador. "
         "Utiliza Google Gemini para transcribir fielmente el relato, identificar la especie zootécnica o de compañía, "
         "aislar los signos clínicos relevantes, extraer el tiempo de evolución y clasificar la urgencia preliminar."
     ),
-)
-@voice_router.post(
-    "/api/v1/triage/voice-eval",
-    response_model=VoiceTriageResponse,
-    include_in_schema=False,
 )
 async def evaluate_voice_triage(
     audio_file: UploadFile = File(
         ...,
         description="Grabación de audio en campo (.wav, .mp3, .m4a o .webm) con el relato del paciente",
+    ),
+    live_transcript: Optional[str] = Form(
+        None,
+        description="Transcripción en vivo opcional capturada en el navegador del usuario",
     ),
 ) -> VoiceTriageResponse:
     """Evaluates field voice note and returns structured clinical triage response."""
@@ -106,6 +107,7 @@ async def evaluate_voice_triage(
     result_dict = await process_voice_triage(
         audio_bytes=audio_bytes,
         mime_type=mime_type,
+        live_transcript=live_transcript,
     )
 
     return VoiceTriageResponse(
