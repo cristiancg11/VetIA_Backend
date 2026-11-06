@@ -15,7 +15,10 @@ from app.schemas.triage import (
     TriageAnalysisResponse,
     normalize_species_name,
 )
-from app.services.triage_ai import MultimodalTriageAIService
+from app.services.triage_ai import (
+    MultimodalTriageAIService,
+    is_transient_overload_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +179,12 @@ async def analyze_veterinary_triage(
     except HTTPException:
         raise
     except Exception as exc:
+        if is_transient_overload_error(exc):
+            logger.warning("[TRIAGE API] Detectada alta demanda de IA (503): %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+            )
         logger.error(
             "[TRIAGE ERROR] Error durante la inferencia de Gemini: %s",
             exc,
@@ -237,6 +246,12 @@ async def confirm_veterinary_diagnosis(
     except HTTPException:
         raise
     except Exception as exc:
+        if is_transient_overload_error(exc):
+            logger.warning("[CONFIRM DIAGNOSIS API] Detectada alta demanda de IA (503): %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+            )
         logger.error(
             "[CONFIRM DIAGNOSIS ERROR] Error durante la confirmación: %s",
             exc,
@@ -293,6 +308,12 @@ async def triage_emergency_chat(
     except HTTPException:
         raise
     except Exception as exc:
+        if is_transient_overload_error(exc):
+            logger.warning("[EMERGENCY CHAT API] Detectada alta demanda de IA (503): %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+            )
         logger.error(
             "[EMERGENCY CHAT ERROR] Error en chat de emergencias: %s",
             exc,
