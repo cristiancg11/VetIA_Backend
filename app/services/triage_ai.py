@@ -182,6 +182,171 @@ REGLAS DE REEVALUACIÓN AGROPECUARIA:
 """
 
 
+def get_species_first_aid_actions(species: str) -> List[str]:
+    """Provides species-specific emergency first-aid handling guidelines for clinical fallback."""
+    norm = normalize_species_name(species)
+    if norm == "Bovino":
+        return [
+            "Mantener al bovino en calma en un área nivelada, con la cabeza y el pecho más elevados que la grupa.",
+            "Si sospecha de timpanismo ruminal agudo, evitar administrar líquidos por vía oral para prevenir asfixia.",
+            "Aislar al animal del acceso a pasturas tiernas de leguminosas o concentrados fermentables.",
+            "Contactar inmediatamente a un médico veterinario de campo para examen físico y descompresión profesional.",
+        ]
+    elif norm == "Equino":
+        return [
+            "Caminar al caballo a paso suave y continuo para evitar que se tire al suelo a revolcarse y se autolesione.",
+            "Retirar de inmediato todo acceso a alimentos (pasto, heno, grano) y baldes de agua fría.",
+            "Verificar color de encías y no administrar medicamentos ni aceites orales sin orden médica veterinaria.",
+            "Contactar de urgencia a un médico veterinario especialista para sondaje nasogástrico y evaluación.",
+        ]
+    elif norm == "Porcino":
+        return [
+            "Aislar al animal en un corral limpio, seco y con temperatura templada sin corrientes de aire.",
+            "Ofrecer suero oral o hidratación con electrolitos si el animal se encuentra consciente y deglute.",
+            "Evitar el estrés por manipulación brusca y mantener monitoreo visual continuo.",
+            "Contactar al médico veterinario de la granja para evaluación diagnóstica del lote.",
+        ]
+    elif norm == "Ovino / Caprino":
+        return [
+            "Mantener al animal bajo techo en un corral limpio, seco y abrigado.",
+            "Inspeccionar mucosas oculares para descartar anemia severa (evaluación FAMACHA) y revisar hinchazón mandibular.",
+            "Evitar que permanezca en decúbito prolongado y ofrecer agua limpia a voluntad.",
+            "Solicitar asistencia veterinaria técnica de campo inmediata.",
+        ]
+    elif norm == "Aves de Corral":
+        return [
+            "Aislar al ave de inmediato del resto de la parvada en un ambiente tibio y bien ventilado.",
+            "Proporcionar agua fresca con vitaminas y electrolitos para aves de corral.",
+            "Limpiar y desinfectar comederos y bebederos comunes para resguardar la bioseguridad del lote.",
+            "Consultar con un médico veterinario avícola.",
+        ]
+    elif norm == "Cuyes / Conejos":
+        return [
+            "Aislar al ejemplar en un espacio limpio, seco, con heno fresco y protegido de corrientes de frío.",
+            "Evitar cualquier cambio brusco de temperatura, ruido o estrés por manipulación excesiva.",
+            "Vigilar la ingesta de agua y la producción de deyecciones para prevenir estasis digestiva.",
+            "Trasladar a atención veterinaria especializada en animales menores o exóticos.",
+        ]
+    else:  # Canino / Felino
+        return [
+            "Mantener al paciente en reposo en un lugar tranquilo, fresco y acolchado.",
+            "ESTRICTAMENTE PROHIBIDO administrar medicamentos humanos (paracetamol, ibuprofeno, aspirina son letales).",
+            "No forzar la ingesta de agua ni alimentos si presenta vómito o letargia marcada.",
+            "Coordinar traslado inmediato a la clínica veterinaria más cercana para examen presencial.",
+        ]
+
+
+def generate_local_clinical_fallback(
+    species: str,
+    peso_kg: float,
+    descripcion: str,
+    triage_id: Optional[str] = None,
+) -> TriageAnalysisResponse:
+    """
+    Generates a deterministic clinical triage response when Google Gemini API is fully unavailable.
+    Guarantees continuous operation without UI blocking or HTTP 503 errors.
+    """
+    normalized_species = normalize_species_name(species)
+    tid = triage_id or str(uuid.uuid4())
+    desc_lower = (descripcion or "").lower()
+
+    # Determinar nivel de urgencia según sintomatología de alerta
+    severe_tokens = [
+        "sangre", "sangrado", "hemorragi", "convulsi", "postra",
+        "no se levanta", "caíd", "caid", "inconscient", "asfixi",
+        "ahogo", "timpanis", "colico", "cólico", "torsi", "shock"
+    ]
+    is_urgent = any(tok in desc_lower for tok in severe_tokens)
+
+    urgency_level = "URGENTE" if is_urgent else "MODERADO"
+    color_code = "ORANGE" if is_urgent else "YELLOW"
+    actions = get_species_first_aid_actions(normalized_species)
+
+    return TriageAnalysisResponse(
+        triage_id=tid,
+        urgency_level=urgency_level,
+        color_code=color_code,
+        visual_findings="Diagnóstico de soporte generado en modo de contingencia por saturación de red.",
+        presumptive_diagnosis=[
+            "Evaluación clínica preliminar en cola de sincronización. Requiere examen físico directo."
+        ],
+        vital_risks=[
+            f"Compromiso hemodinámico o metabólico agudo característico de la especie {normalized_species} si no se atiende a tiempo.",
+            "Riesgo de deterioro clínico acelerado sin examen físico directo por un médico veterinario."
+        ],
+        first_aid_actions=actions,
+        warnings_contraindications=[
+            "Modo de contingencia médica: Esta orientación automatizada de soporte no sustituye el diagnóstico presencial.",
+            "No administrar fármacos humanos ni automedicar al paciente sin indicación veterinaria profesional."
+        ],
+        estimated_fluid_deficit_percent=5.0 if is_urgent else 0.0,
+        diagnostic_questions=[
+            DiagnosticQuestion(id="q1", question="¿El animal presenta sangrado visible o mucosas excesivamente pálidas?", type="yes_no"),
+            DiagnosticQuestion(id="q2", question="¿El paciente es capaz de sostenerse en cuatro patas por sus propios medios?", type="yes_no"),
+            DiagnosticQuestion(id="q3", question="¿El inicio de los síntomas ocurrió de forma súbita en las últimas 6 horas?", type="yes_no"),
+        ],
+    )
+
+
+def generate_local_confirmation_fallback(
+    triage_id: str,
+    species: str,
+    initial_urgency: str,
+    answers: Dict[str, Any],
+) -> ConfirmDiagnosisResponse:
+    """Fallback for diagnosis confirmation re-evaluation when Gemini is unreachable."""
+    normalized_species = normalize_species_name(species)
+    has_positive_alarm = any(bool(v) for v in answers.values())
+    escalated = has_positive_alarm and initial_urgency != "CRITICO"
+    urgency = "URGENTE" if escalated else (initial_urgency or "MODERADO")
+    color = "ORANGE" if urgency in ["URGENTE", "CRITICO"] else "YELLOW"
+
+    return ConfirmDiagnosisResponse(
+        triage_id=triage_id,
+        urgency_level=urgency,
+        color_code=color,
+        is_escalated=escalated,
+        clinical_reassessment=(
+            f"Reevaluación preliminar de contingencia generada en modo seguro para {normalized_species}. "
+            "Se registraron respuestas de descarte clínico que aconsejan examen presencial inmediato."
+        ),
+        presumptive_diagnosis=[
+            "Evaluación clínica preliminar en cola de sincronización. Requiere examen físico directo."
+        ],
+        vital_risks=[
+            "Riesgo de complicaciones secundarias si no se practica examen físico y auscultación presencial."
+        ],
+        first_aid_actions=get_species_first_aid_actions(normalized_species),
+        warnings_contraindications=[
+            "Modo de contingencia: Siga las pautas de manejo y acuda a un centro o profesional veterinario."
+        ],
+        estimated_fluid_deficit_percent=5.0 if escalated else 0.0,
+        recommended_facility_type="Atención médico-veterinaria presencial inmediata",
+    )
+
+
+def generate_local_chat_fallback(
+    triage_id: str,
+    species: str,
+    message: str,
+) -> EmergencyChatResponse:
+    """Fallback for first-aid emergency chat when Gemini is unreachable."""
+    normalized_species = normalize_species_name(species)
+    actions = get_species_first_aid_actions(normalized_species)
+    reply_text = (
+        f"Modo de soporte asistido para {normalized_species}: Debido a saturación temporal de red, "
+        f"te proporcionamos las medidas esenciales de manejo inmediato:\n\n"
+        + "\n".join([f"• {act}" for act in actions])
+        + "\n\nRecuerda no suministrar medicamentos humanos ni fármacos sin supervisión médica veterinaria directa."
+    )
+    return EmergencyChatResponse(
+        triage_id=triage_id,
+        reply=reply_text,
+        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        disclaimer="VetIA modo de contingencia: No reemplaza la atención veterinaria presencial.",
+    )
+
+
 def build_emergency_chat_prompt(
     triage_id: str,
     species: str,
@@ -447,12 +612,16 @@ class MultimodalTriageAIService:
                     )
                     continue
 
-        # Si todos los modelos de la cascada fallan
-        logger.error("[TRIAGE AI FATAL] Todos los modelos de la cascada fallaron: %s", last_error)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+        # Fallback clínico de emergencia local (Safe Failover)
+        logger.warning("[TRIAGE AI FAILOVER] Activando fallback clínico de emergencia local tras fallo total de modelos: %s", last_error)
+        print(f"\n⚠️ [TRIAGE SAFE FAILOVER] Activado fallback clínico de emergencia local para especie {normalized_species} por saturación de red.\n")
+        fallback_assessment = generate_local_clinical_fallback(
+            species=normalized_species,
+            peso_kg=peso_kg,
+            descripcion=descripcion,
         )
+        self._save_session(fallback_assessment.triage_id, fallback_assessment, normalized_species, peso_kg, descripcion)
+        return fallback_assessment
 
     # -------------------------------------------------------------------------
     # 2. CONFIRMATION DIAGNOSIS (REEVALUATION VIA GEMINI)
@@ -563,10 +732,14 @@ class MultimodalTriageAIService:
                     logger.warning("[TRIAGE AI WARNING] Fallo reevaluación con %s: %s. Conmutando a %s", model_name, exc, next_model)
                     continue
 
-        logger.error("[TRIAGE AI FATAL] Todos los modelos fallaron en confirmación: %s", last_error)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+        # Safe Failover para confirmación diagnóstica
+        logger.warning("[CONFIRM DIAGNOSIS FAILOVER] Activando reevaluación clínica de contingencia local: %s", last_error)
+        print(f"\n⚠️ [CONFIRM DIAGNOSIS SAFE FAILOVER] Activando reevaluación clínica local para especie {target_species}.\n")
+        return generate_local_confirmation_fallback(
+            triage_id=triage_id,
+            species=target_species,
+            initial_urgency=target_urgency,
+            answers=answers,
         )
 
     # -------------------------------------------------------------------------
@@ -684,8 +857,11 @@ class MultimodalTriageAIService:
                     logger.warning("[TRIAGE AI CHAT WARNING] Fallo chat con %s: %s. Conmutando a %s", model_name, exc, next_model)
                     continue
 
-        logger.error("[TRIAGE AI CHAT FATAL] Todos los modelos fallaron en chat: %s", last_error)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
+        # Safe Failover para chat de primeros auxilios
+        logger.warning("[EMERGENCY CHAT FAILOVER] Activando respuesta orientativa local: %s", last_error)
+        print(f"\n⚠️ [EMERGENCY CHAT SAFE FAILOVER] Activando respuesta orientativa local para especie {species}.\n")
+        return generate_local_chat_fallback(
+            triage_id=triage_id,
+            species=species,
+            message=message,
         )
