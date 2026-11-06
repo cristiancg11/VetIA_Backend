@@ -1,6 +1,7 @@
 """FastAPI endpoints for Multimodal Veterinary Triage, Confirmation Diagnosis, and Emergency Chat powered strictly by Google Gemini."""
 
 import logging
+import time
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
@@ -158,6 +159,7 @@ async def analyze_veterinary_triage(
         mime_type = "image/jpeg"
 
     # Execute Multimodal Ingestion and Inference strictly via Gemini
+    start_time = time.perf_counter()
     try:
         assessment: TriageAnalysisResponse = await triage_service.analyze_triage(
             image_bytes=contents,
@@ -167,9 +169,16 @@ async def analyze_veterinary_triage(
             descripcion=target_description,
         )
 
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        print(
+            f"[TRIAGE PERFORMANCE] Inferencia completada con éxito en {elapsed_ms:.2f} ms | "
+            f"ID: {assessment.triage_id} | Especie: {target_species} | Urgencia: {assessment.urgency_level} ({assessment.color_code})"
+        )
         logger.info(
-            "[TRIAGE COMPLETED] Evaluación finalizada con éxito. ID: %s, Nivel: %s (Color: %s), Preguntas: %d",
+            "[TRIAGE PERFORMANCE] Inferencia completada con éxito en %.2f ms (ID: %s, Especie: %s, Nivel: %s, Color: %s, Preguntas: %d)",
+            elapsed_ms,
             assessment.triage_id,
+            target_species,
             assessment.urgency_level,
             assessment.color_code,
             len(assessment.diagnostic_questions),
@@ -224,6 +233,7 @@ async def confirm_veterinary_diagnosis(
         payload.answers,
     )
 
+    start_time = time.perf_counter()
     try:
         confirmation: ConfirmDiagnosisResponse = await triage_service.confirm_diagnosis(
             triage_id=payload.triage_id,
@@ -234,9 +244,15 @@ async def confirm_veterinary_diagnosis(
             questions=payload.questions,
         )
 
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        print(
+            f"[CONFIRM DIAGNOSIS PERFORMANCE] Confirmación completada en {elapsed_ms:.2f} ms | "
+            f"Triage ID: {confirmation.triage_id} | Urgencia: {confirmation.urgency_level}"
+        )
         logger.info(
-            "[CONFIRM DIAGNOSIS COMPLETED] Triage ID: %s reevaluado a: %s (Escalado: %s, Color: %s)",
+            "[CONFIRM DIAGNOSIS COMPLETED] Triage ID: %s reevaluado en %.2f ms a: %s (Escalado: %s, Color: %s)",
             confirmation.triage_id,
+            elapsed_ms,
             confirmation.urgency_level,
             confirmation.is_escalated,
             confirmation.color_code,
@@ -296,12 +312,23 @@ async def triage_emergency_chat(
         query_text[:80],
     )
 
+    start_time = time.perf_counter()
     try:
         reply: EmergencyChatResponse = await triage_service.emergency_chat(
             triage_id=payload.triage_id,
             message=query_text,
             context=payload.context,
             conversation_history=payload.conversation_history,
+        )
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        print(
+            f"[EMERGENCY CHAT PERFORMANCE] Chat completado en {elapsed_ms:.2f} ms | "
+            f"Triage ID: {payload.triage_id}"
+        )
+        logger.info(
+            "[EMERGENCY CHAT COMPLETED] Chat para Triage ID: %s respondido en %.2f ms",
+            payload.triage_id,
+            elapsed_ms,
         )
         return reply
 
