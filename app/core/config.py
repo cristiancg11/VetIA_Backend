@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # Google Gemini Settings
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Supabase Settings
     SUPABASE_URL: str = "https://xqkqogrfakobdxrfusdg.supabase.co"
@@ -42,6 +42,23 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
+
+    @field_validator("GEMINI_API_KEY", mode="before")
+    @classmethod
+    def validate_gemini_api_key(cls, v: Optional[str]) -> str:
+        """Enforces that GEMINI_API_KEY exists in the environment and is not an empty placeholder."""
+        val = (v or "").strip()
+        if not val or val == "your_gemini_api_key_here":
+            logger.warning("❌ [CONFIG ASSERTION]: GEMINI_API_KEY está vacía o no existe en las variables de entorno.")
+        return val
+
+    def assert_gemini_api_key_exists(self) -> bool:
+        """Asserts that GEMINI_API_KEY is present and populated before starting API requests."""
+        key = (self.GEMINI_API_KEY or "").strip()
+        is_valid = bool(key and key != "your_gemini_api_key_here")
+        if not is_valid:
+            logger.error("❌ [CONFIG ASSERTION FAILED]: GEMINI_API_KEY no existe o no tiene un token válido asignado.")
+        return is_valid
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
@@ -71,7 +88,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Provide a cached singleton instance of application settings with Gemini API Key validation."""
     settings = Settings()
-    if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.strip() in ("", "your_gemini_api_key_here"):
+    if not settings.assert_gemini_api_key_exists():
         logger.warning(
             "[CONFIG WARNING] La variable 'GEMINI_API_KEY' no está configurada o se encuentra vacía en el archivo .env. "
             "El servicio de triaje operará con el motor clínico de respaldo y contingencia."
