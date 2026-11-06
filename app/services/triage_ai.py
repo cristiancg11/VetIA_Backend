@@ -347,7 +347,9 @@ class MultimodalTriageAIService:
 
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.1,
+            temperature=0.2,
+            max_output_tokens=1200,
+            top_p=0.8,
         )
 
         last_error: Optional[Exception] = None
@@ -456,7 +458,9 @@ class MultimodalTriageAIService:
 
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.1,
+            temperature=0.2,
+            max_output_tokens=1200,
+            top_p=0.8,
         )
 
         last_error: Optional[Exception] = None
@@ -561,7 +565,11 @@ class MultimodalTriageAIService:
                 return self._client.models.generate_content(
                     model=target_model,
                     contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.2),
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=1200,
+                        top_p=0.8,
+                    ),
                 )
 
             # Intento 1
