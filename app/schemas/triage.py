@@ -1,9 +1,20 @@
 """Data transfer models and schemas for pet triage, clinic localization, follow-up chat, and database persistence."""
 
 import re
+import uuid
 from enum import Enum
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class DiagnosticQuestion(BaseModel):
+    """Pregunta de descarte clínico para confirmación diagnóstica."""
+    id: str = Field(..., description="Identificador único de la pregunta (ej. q1, q2)")
+    question: str = Field(..., description="Texto de la pregunta orientada al tutor")
+    type: Literal["yes_no", "multiple_choice", "text"] = Field(
+        default="yes_no",
+        description="Tipo de respuesta requerida (yes_no)",
+    )
 
 
 class TriageUrgencyLevel(str, Enum):
@@ -65,6 +76,14 @@ class TriageAnalysisResponse(BaseModel):
     estimated_fluid_deficit_percent: float = Field(
         ...,
         description="Porcentaje numérico estimado de déficit hídrico o deshidratación (0.0 a 15.0%)",
+    )
+    triage_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Identificador único del caso de triaje (UUID)",
+    )
+    diagnostic_questions: List[DiagnosticQuestion] = Field(
+        default_factory=list,
+        description="Lista de 3 a 4 preguntas de descarte clínico para confirmación diagnóstica",
     )
 
     @field_validator("urgency_level", mode="before")
@@ -235,3 +254,140 @@ class ChatResponse(BaseModel):
     reply: str = Field(..., description="Veterinary AI guidance reply")
     timestamp: str = Field(..., description="ISO 8601 timestamp")
     triage_id: str = Field(..., description="Associated triage case ID")
+
+
+class ConfirmDiagnosisRequest(BaseModel):
+    """Payload para reevaluación y confirmación del triaje con respuestas del test de descarte."""
+
+    triage_id: str = Field(..., description="Identificador único del caso de triaje previo")
+    answers: Dict[str, Any] = Field(
+        ...,
+        description="Respuestas del test de descarte clínico (ej. {'q1': True, 'q2': False, 'q3': True})",
+    )
+    initial_symptoms: Optional[str] = Field(
+        None,
+        description="Síntomas iniciales del paciente (opcional si se rescatan del contexto)",
+    )
+    species: Optional[str] = Field(
+        None,
+        description="Especie del paciente (ej. Canino, Felino)",
+    )
+    initial_urgency_level: Optional[str] = Field(
+        None,
+        description="Nivel preliminar de urgencia antes de responder las preguntas",
+    )
+    questions: Optional[List[DiagnosticQuestion]] = Field(
+        default=None,
+        description="Listado opcional de preguntas para enriquecer el contexto",
+    )
+
+
+class ConfirmDiagnosisResponse(BaseModel):
+    """Respuesta tras reevaluación de urgencia con las preguntas de descarte clínico."""
+
+    triage_id: str = Field(..., description="Identificador del triaje")
+    urgency_level: str = Field(
+        ...,
+        description="Nivel de urgencia definitivo: CRITICO | URGENTE | MODERADO | LEVE",
+    )
+    color_code: str = Field(
+        ...,
+        description="Código de color según Manchester Triage System: RED | ORANGE | YELLOW | GREEN",
+    )
+    is_escalated: bool = Field(
+        ...,
+        description="Indica si la urgencia escaló tras las respuestas de descarte",
+    )
+    clinical_reassessment: str = Field(
+        ...,
+        description="Razonamiento clínico de la reevaluación considerando el test confirmatorio",
+    )
+    presumptive_diagnosis: List[str] = Field(
+        default_factory=list,
+        description="Diagnósticos presuntivos actualizados",
+    )
+    vital_risks: List[str] = Field(
+        default_factory=list,
+        description="Riesgos vitales actualizados",
+    )
+    first_aid_actions: List[str] = Field(
+        default_factory=list,
+        description="Pautas secuenciales de primeros auxilios y estabilización inmediata",
+    )
+    warnings_contraindications: List[str] = Field(
+        default_factory=list,
+        description="Contraindicaciones médicas absolutas (NO medicamentos humanos, etc.)",
+    )
+    estimated_fluid_deficit_percent: float = Field(
+        default=0.0,
+        description="Déficit hídrico o porcentaje de deshidratación estimado",
+    )
+    recommended_facility_type: str = Field(
+        default="Clínica 24 horas con quirófano",
+        description="Tipo de centro de atención veterinaria recomendado",
+    )
+
+    @field_validator("urgency_level", mode="before")
+    @classmethod
+    def normalize_urgency_level(cls, v: Any) -> str:
+        s = str(v).strip().upper()
+        if "CRITIC" in s:
+            return "CRITICO"
+        if "URGENT" in s:
+            return "URGENTE"
+        if "MODERAD" in s:
+            return "MODERADO"
+        if "LEV" in s:
+            return "LEVE"
+        return s
+
+    @field_validator("color_code", mode="before")
+    @classmethod
+    def normalize_color_code(cls, v: Any) -> str:
+        s = str(v).strip().upper()
+        if "ROJO" in s or "RED" in s:
+            return "RED"
+        if "NARANJA" in s or "ORANGE" in s:
+            return "ORANGE"
+        if "AMARILLO" in s or "YELLOW" in s:
+            return "YELLOW"
+        if "VERDE" in s or "GREEN" in s:
+            return "GREEN"
+        return s
+
+    @field_validator("estimated_fluid_deficit_percent", mode="before")
+    @classmethod
+    def normalize_fluid_deficit(cls, v: Any) -> float:
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            clean = re.sub(r"[^\d.]", "", v)
+            return float(clean) if clean else 0.0
+        return 0.0
+
+
+class EmergencyChatRequest(BaseModel):
+    """Payload para el asistente conversacional de primeros auxilios y triaje."""
+
+    triage_id: str = Field(..., description="Identificador del caso de triaje")
+    message: str = Field(..., description="Pregunta o consulta urgente del tutor")
+    context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Contexto clínico opcional del paciente (especie, urgencia, hallazgos)",
+    )
+    conversation_history: Optional[List[ChatMessage]] = Field(
+        default_factory=list,
+        description="Historial previo de mensajes de la conversación",
+    )
+
+
+class EmergencyChatResponse(BaseModel):
+    """Respuesta del asistente de primeros auxilios en emergencias veterinarias."""
+
+    triage_id: str = Field(..., description="Identificador del triaje")
+    reply: str = Field(..., description="Instrucciones precisas y empáticas de primeros auxilios")
+    timestamp: str = Field(..., description="Timestamp ISO 8601")
+    disclaimer: str = Field(
+        default="VetIA no reemplaza la atención veterinaria presencial ni prescribe fármacos bajo receta.",
+        description="Aviso legal y médico obligatorio",
+    )

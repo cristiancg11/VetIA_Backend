@@ -1,12 +1,19 @@
-"""FastAPI endpoint for Multimodal Veterinary Triage powered by Google Gemini."""
+"""FastAPI endpoints for Multimodal Veterinary Triage, Confirmation Diagnosis, and Emergency Chat powered by Google Gemini."""
 
+import datetime
 import logging
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.core.config import Settings, get_settings
 from app.core.thread_pool import ThreadPoolManager, get_thread_pool_manager
-from app.schemas.triage import TriageAnalysisResponse
+from app.schemas.triage import (
+    ConfirmDiagnosisRequest,
+    ConfirmDiagnosisResponse,
+    EmergencyChatRequest,
+    EmergencyChatResponse,
+    TriageAnalysisResponse,
+)
 from app.services.triage_ai import MultimodalTriageAIService
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,9 @@ def _clean_float(val: Any) -> Optional[float]:
     return None
 
 
+# =============================================================================
+# 1. ANALISIS DE TRIAJE MULTIMODAL CON GENERACION DE PREGUNTAS DE DESCARTE
+# =============================================================================
 @triage_router.post(
     "/triage/analyze",
     response_model=TriageAnalysisResponse,
@@ -58,7 +68,7 @@ def _clean_float(val: Any) -> Optional[float]:
     description=(
         "Recibe una fotografía de la lesión o animal junto con datos clínicos del paciente. "
         "Ejecuta inferencia multimodal con Gemini Flash y retorna la evaluación estructurada "
-        "conforme al Manchester Triage System."
+        "conforme al Manchester Triage System, incluyendo 3 a 4 preguntas de descarte clínico."
     ),
 )
 async def analyze_veterinary_triage(
@@ -139,10 +149,11 @@ async def analyze_veterinary_triage(
         )
 
         logger.info(
-            "[TRIAGE COMPLETED] Evaluación finalizada con éxito. Nivel: %s (Color: %s), Déficit: %s%%",
+            "[TRIAGE COMPLETED] Evaluación finalizada con éxito. ID: %s, Nivel: %s (Color: %s), Preguntas: %d",
+            assessment.triage_id,
             assessment.urgency_level,
             assessment.color_code,
-            assessment.estimated_fluid_deficit_percent,
+            len(assessment.diagnostic_questions),
         )
         return assessment
 
@@ -156,4 +167,119 @@ async def analyze_veterinary_triage(
             especie=target_species,
             peso_kg=target_weight,
             descripcion=target_description,
+        )
+
+
+# =============================================================================
+# 2. ENDPOINT DE CONFIRMACION Y AJUSTE DE PRONOSTICO (TEST DE DESCARTE)
+# =============================================================================
+@triage_router.post(
+    "/triage/confirm-diagnosis",
+    response_model=ConfirmDiagnosisResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Confirmación diagnóstica y ajuste de pronóstico clínico",
+    description=(
+        "Recibe el triage_id, los síntomas iniciales y las respuestas del test de descarte. "
+        "Gemini re-evalúa el nivel de urgencia definitivo considerando las respuestas (por ejemplo, "
+        "si el abdomen está duro o las encías blancas, escala de inmediato a CRÍTICO / ROJO)."
+    ),
+)
+async def confirm_veterinary_diagnosis(
+    payload: ConfirmDiagnosisRequest,
+    triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
+) -> ConfirmDiagnosisResponse:
+    """Execute clinical re-evaluation of triage urgency based on rule-out questionnaire responses."""
+    print(f"--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: {payload.triage_id}, Respuestas: {payload.answers}")
+    logger.info(
+        "--> [CONFIRM DIAGNOSIS REQUEST] Triage ID: %s, Especie: %s, Respuestas: %s",
+        payload.triage_id,
+        payload.species or "N/A",
+        payload.answers,
+    )
+
+    try:
+        confirmation: ConfirmDiagnosisResponse = await triage_service.confirm_diagnosis(
+            triage_id=payload.triage_id,
+            answers=payload.answers,
+            initial_symptoms=payload.initial_symptoms,
+            species=payload.species,
+            initial_urgency_level=payload.initial_urgency_level,
+            questions=payload.questions,
+        )
+
+        logger.info(
+            "[CONFIRM DIAGNOSIS COMPLETED] Triage ID: %s reevaluado a: %s (Escalado: %s, Color: %s)",
+            confirmation.triage_id,
+            confirmation.urgency_level,
+            confirmation.is_escalated,
+            confirmation.color_code,
+        )
+        return confirmation
+
+    except Exception as exc:
+        logger.error(
+            "[CONFIRM DIAGNOSIS ERROR] Error durante la confirmación: %s. Activando contingencia determinista.",
+            exc,
+            exc_info=True,
+        )
+        return triage_service._generate_rule_based_confirmation(
+            triage_id=payload.triage_id,
+            answers=payload.answers,
+            initial_symptoms=payload.initial_symptoms,
+            species=payload.species,
+            initial_urgency_level=payload.initial_urgency_level,
+            questions=payload.questions,
+        )
+
+
+# =============================================================================
+# 3. ENDPOINT PARA EL CHAT ASISTENTE DE URGENCIAS Y PRIMEROS AUXILIOS
+# =============================================================================
+@triage_router.post(
+    "/triage/chat",
+    response_model=EmergencyChatResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chat Asistente de Urgencias y Primeros Auxilios",
+    description=(
+        "Recibe triage_id, message del tutor y el contexto del triaje actual. "
+        "Responde con instrucciones precisas y empáticas de primeros auxilios sin emitir "
+        "recetas farmacológicas no autorizadas."
+    ),
+)
+async def triage_emergency_chat(
+    payload: EmergencyChatRequest,
+    triage_service: MultimodalTriageAIService = Depends(get_triage_ai_service),
+) -> EmergencyChatResponse:
+    """Process contextual emergency first-aid questions grounded on clinical triage context."""
+    print(f"--> [EMERGENCY CHAT REQUEST] Triage ID: {payload.triage_id}, Mensaje: {payload.message[:60]}")
+    logger.info(
+        "--> [EMERGENCY CHAT REQUEST] Triage ID: %s, Mensaje: %s",
+        payload.triage_id,
+        payload.message[:80],
+    )
+
+    try:
+        reply: EmergencyChatResponse = await triage_service.emergency_chat(
+            triage_id=payload.triage_id,
+            message=payload.message,
+            context=payload.context,
+            conversation_history=payload.conversation_history,
+        )
+        return reply
+
+    except Exception as exc:
+        logger.error(
+            "[EMERGENCY CHAT ERROR] Error en chat de emergencias: %s. Retornando respuesta de contingencia.",
+            exc,
+            exc_info=True,
+        )
+        return EmergencyChatResponse(
+            triage_id=payload.triage_id,
+            reply=triage_service._generate_rule_based_chat_reply(
+                triage_id=payload.triage_id,
+                message=payload.message,
+                context=payload.context,
+                conversation_history=payload.conversation_history,
+            ),
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
