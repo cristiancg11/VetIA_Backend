@@ -138,6 +138,8 @@ async def analyze_veterinary_triage(
     if mime_type.lower() not in ALLOWED_IMAGE_TYPES:
         mime_type = "image/jpeg"
 
+    print(f"[TRIAGE AI] Analizando imagen de {len(contents)} bytes para especie: {target_species}")
+
     # Execute Multimodal Ingestion and Inference
     try:
         assessment: TriageAnalysisResponse = await triage_service.analyze_triage(

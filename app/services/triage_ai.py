@@ -1,6 +1,6 @@
 """Multimodal Veterinary Triage AI Service using Google Gemini Flash.
-Supports multimodal analysis, clinical confirmation test (rule-out questions),
-and emergency first-aid chat with graceful offline fallback.
+Supports multimodal analysis with strict visual byte inspection and species differentiation,
+clinical confirmation test (rule-out questions), and emergency first-aid chat.
 """
 
 import datetime
@@ -29,38 +29,36 @@ logger = logging.getLogger(__name__)
 # Global in-memory session cache for clinical triage context across requests
 _GLOBAL_TRIAGE_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
-VET_TRIAGE_SYSTEM_PROMPT = """Eres un Médico Veterinario Especialista en Triage y Cuidados Críticos de Urgencias Veterinarias (VetIA).
-Tu labor es analizar de forma inmediata, rigurosa y metódica una fotografía clínica aportada por el tutor (que puede mostrar al animal, una lesión cutánea, traumatismo, vómito o deposición anormal) combinada con los datos fisiológicos y sintomáticos reportados por el tutor (especie, peso en kg y descripción de síntomas).
+VET_TRIAGE_SYSTEM_PROMPT = """Eres un médico veterinario especialista en triage de urgencias. Tu tarea primordial es INSPECCIONAR VISUALMENTE la imagen adjunta.
 
-Debes categorizar el caso de acuerdo con el Manchester Triage System adaptado a veterinaria:
-- CRITICO / RED (ROJO): Riesgo vital inminente, shock, paro inminente, sangrado masivo activo, obstrucción de vía aérea o uretral, inconsciencia, convulsión continua.
-- URGENTE / ORANGE (NARANJA): Muy urgente, intoxicación o envenenamiento agudo, vómito incoercible, dolor severo agudo, laceraciones tisulares profundas.
-- MODERADO / YELLOW (AMARILLO): Urgente, cuadros moderados con inicio en < 24 horas y estabilidad hemodinámica relativa (cojera dolorosa, abscesos, conjuntivitis severa, otitis purulenta).
-- LEVE / GREEN (VERDE): No urgente, afecciones subagudas o leves (rasguños o abrasiones dérmicas superficiales limpias, alopecias sin inflamación severa).
-
-REGLAS DE PRECISIÓN Y SEGURIDAD VITAL:
-1. Inspección visual minuciosa: describe colorimetría (sangre rutilante vs melena, color de mucosas), consistencia y textura de fluidos o lesiones.
-2. Calidad fotográfica: si la imagen es poco nítida, declara las limitaciones con cautela clínica.
-3. Contraindicaciones: PROHIBIDO indicar o insinuar medicamentos humanos (paracetamol, ibuprofeno, aspirina son mortales). NO inducir el vómito sin supervisión médica.
-4. Porcentaje de déficit hídrico: estima numéricamente el déficit de fluidos / deshidratación (0.0 a 15.0%).
-5. Preguntas de descarte clínico ("diagnostic_questions"): Debes incluir obligatoriamente de 3 a 4 preguntas clave con respuesta binaria ("yes_no") orientadas a descartar signos críticos en el paciente (ej. color de encías, dureza abdominal, ingesta tóxica, estado de consciencia).
+REGLAS OBLIGATORIAS:
+- Primero, identifica la especie exacta que aparece en la imagen o la muestra biológica (vómito, heces, piel, mucosas, herida, postura). Si el usuario dice que es un gato y en la foto se ve un gato o muestra felina, analiza la fisiopatología FELINA (los gatos se descompensan mucho más rápido por lipidosis hepática, obstrucción uretral felina, hipotermia o choque circulatorio silente). Si es un perro, analiza la fisiopatología CANINA (riesgo de torsión gástrica/GDV, parvovirosis, shock hipovolémico).
+- En el campo 'visual_findings' DEBES describir elementos visuales concretos y únicos de ESTA foto específica (color exacto, textura, consistencia, área anatómica visible, presencia o ausencia de sangre, postura del animal). Si no describes lo que ves visualmente en la foto, el diagnóstico será inválido.
+- Formula las 3 a 4 preguntas de descarte clínico ('diagnostic_questions') TOTALMENTE PERSONALIZADAS a lo que acabas de ver en la foto y a la especie indicada, con respuesta binaria ("yes_no").
+- PROHIBIDO devolver respuestas de plantilla o diagnósticos genéricos de canino cuando se evalúa un felino o viceversa.
+- Categoriza la urgencia según el Manchester Triage System:
+  * CRITICO / RED (ROJO): Riesgo vital inminente, shock, paro inminente, sangrado masivo activo, obstrucción uretral o respiratoria, inconsciencia.
+  * URGENTE / ORANGE (NARANJA): Muy urgente, intoxicación o sospecha de veneno, dolor agudo severo, vómito incoercible, laceraciones profundas.
+  * MODERADO / YELLOW (AMARILLO): Urgente pero estable (< 24h, cojera, abscesos, conjuntivitis severa).
+  * LEVE / GREEN (VERDE): No urgente, abrasiones superficiales limpias, afecciones subagudas leves.
+- CONTRAINDICACIONES ESTRICTAS: PROHIBIDO indicar o sugerir medicamentos humanos (paracetamol, acetaminofén, ibuprofeno, aspirina son LETALES en perros y gatos). NO inducir vómito sin indicación médica presencial.
 
 FORMATO ESTRICTO DE SALIDA:
 Debes responder ÚNICAMENTE con un objeto JSON válido, sin bloques de markdown envolventes (sin ```json ni ```) y sin ningún texto fuera del JSON:
 {
   "triage_id": "generar-un-uuid-valido",
-  "urgency_level": "CRITICO",
-  "color_code": "RED",
-  "visual_findings": "Detalle clínico claro de lo observado en la foto",
-  "presumptive_diagnosis": ["Diagnóstico 1", "Diagnóstico 2"],
+  "urgency_level": "CRITICO" | "URGENTE" | "MODERADO" | "LEVE",
+  "color_code": "RED" | "ORANGE" | "YELLOW" | "GREEN",
+  "visual_findings": "Descripción detallada y única de los hallazgos observados en esta foto específica",
+  "presumptive_diagnosis": ["Diagnóstico 1 específico de la especie", "Diagnóstico 2"],
   "vital_risks": ["Riesgo principal detectado"],
   "first_aid_actions": ["Paso 1 de primeros auxilios", "Paso 2"],
   "warnings_contraindications": ["NO suministrar analgésicos humanos", "NO forzar ingestión de agua"],
   "estimated_fluid_deficit_percent": 5.0,
   "diagnostic_questions": [
-    {"id": "q1", "question": "¿Las encías están blancas o moradas?", "type": "yes_no"},
-    {"id": "q2", "question": "¿El abdomen se siente duro, inflamado o doloroso al tacto?", "type": "yes_no"},
-    {"id": "q3", "question": "¿Sospecha de ingesta de veneno, plantas tóxicas o basura?", "type": "yes_no"}
+    {"id": "q1", "question": "Pregunta de descarte adaptada a la especie y lo visto en la foto", "type": "yes_no"},
+    {"id": "q2", "question": "Pregunta de descarte 2", "type": "yes_no"},
+    {"id": "q3", "question": "Pregunta de descarte 3", "type": "yes_no"}
   ]
 }
 """
@@ -71,7 +69,7 @@ Tu misión es RE-EVALUAR de forma definitiva el nivel de urgencia y pronóstico 
 REGLAS MÉDICAS DETERMINANTES:
 1. ESCALADA CRÍTICA INMEDIATA:
    - Si el tutor confirma encías blancas, pálidas o azuladas/moradas (signo inminente de hipoperfusión, shock hipovolémico o cianosis severa) -> DEBE ESCALAR A CRÍTICO / RED.
-   - Si el tutor confirma abdomen duro, distendido, rígido o doloroso al tacto (sospecha de abdomen agudo, torsión gástrica dilatada o hemoperitoneo) -> DEBE ESCALAR A CRÍTICO / RED.
+   - Si el tutor confirma abdomen duro, distendido, rígido o doloroso al tacto (sospecha de abdomen agudo, torsión gástrica dilatada en caninos o hemoperitoneo/peritonitis) -> DEBE ESCALAR A CRÍTICO / RED.
    - Si el tutor confirma inconsciencia, convulsión activa, sangrado pulsátil que no cede o ahogo/asfixia -> DEBE ESCALAR A CRÍTICO / RED.
    - Si el tutor confirma ingesta de veneno, rodenticida o tóxicos químicos -> DEBE ESCALAR A CRÍTICO / RED o URGENTE / ORANGE con traslado inmediato.
 2. Si todas las respuestas de descarte son negativas y no hay signos de alarma, mantén la clasificación preliminar o ajusta con prudencia hacia un nivel más seguro.
@@ -80,8 +78,8 @@ REGLAS MÉDICAS DETERMINANTES:
 FORMATO ESTRICTO DE SALIDA (JSON PURO sin markdown):
 {
   "triage_id": "id-del-triaje",
-  "urgency_level": "CRITICO",
-  "color_code": "RED",
+  "urgency_level": "CRITICO" | "URGENTE" | "MODERADO" | "LEVE",
+  "color_code": "RED" | "ORANGE" | "YELLOW" | "GREEN",
   "is_escalated": true,
   "clinical_reassessment": "Explicación concisa y clínica de por qué se reajusta o confirma la urgencia",
   "presumptive_diagnosis": ["Diagnóstico presuntivo 1", "Diagnóstico 2"],
@@ -125,36 +123,55 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
 
 def generate_default_diagnostic_questions(descripcion: str, especie: str = "Mascota") -> List[DiagnosticQuestion]:
-    """Generates 3 to 4 clinical rule-out questions tailored to symptoms."""
+    """Generates 3 to 4 clinical rule-out questions tailored specifically to symptoms and species."""
     text = (descripcion or "").lower()
+    is_feline = any(k in especie.lower() for k in ["felin", "gat"])
+
     if any(k in text for k in ["vomit", "diarre", "veneno", "toxico", "estomago", "comio", "ingir"]):
+        q4 = (
+            "¿Lleva más de 24 horas sin comer o beber agua? (En gatos esto puede causar lipidosis hepática grave)"
+            if is_feline
+            else "¿El perro intenta vomitar con arcadas improductivas continuas?"
+        )
         return [
             DiagnosticQuestion(id="q1", question="¿Las encías están blancas o moradas?", type="yes_no"),
             DiagnosticQuestion(id="q2", question="¿El abdomen se siente duro, inflamado o doloroso al tacto?", type="yes_no"),
-            DiagnosticQuestion(id="q3", question="¿Sospecha de ingesta de veneno, plantas tóxicas o basura?", type="yes_no"),
-            DiagnosticQuestion(id="q4", question="¿Presenta debilidad extrema o imposibilidad para incorporarse?", type="yes_no"),
+            DiagnosticQuestion(id="q3", question="¿Sospecha de ingesta de veneno, plantas tóxicas (ej. lirios en gatos) o basura?", type="yes_no"),
+            DiagnosticQuestion(id="q4", question=q4, type="yes_no"),
         ]
     elif any(k in text for k in ["sangr", "herida", "corte", "atropell", "golpe", "caida", "fractur"]):
         return [
             DiagnosticQuestion(id="q1", question="¿El sangrado es continuo, a chorro o no cesa con compresión firme?", type="yes_no"),
             DiagnosticQuestion(id="q2", question="¿Las encías se aprecian blancas, pálidas o azuladas?", type="yes_no"),
-            DiagnosticQuestion(id="q3", question="¿El animal está inconsciente, no responde o presenta dificultad para respirar?", type="yes_no"),
+            DiagnosticQuestion(id="q3", question="¿El animal está inconsciente, no responde o presenta respiración con boca abierta?", type="yes_no"),
             DiagnosticQuestion(id="q4", question="¿Se observa deformidad evidente en las extremidades o hueso expuesto?", type="yes_no"),
         ]
+    elif any(k in text for k in ["orina", "miccion", "vejiga", "uretr"]):
+        return [
+            DiagnosticQuestion(id="q1", question="¿Pasa tiempo en el arenero pujando sin expulsar orina o maúlla de dolor?", type="yes_no"),
+            DiagnosticQuestion(id="q2", question="¿El abdomen bajo se siente como una pelota dura y dolorosa?", type="yes_no"),
+            DiagnosticQuestion(id="q3", question="¿Las encías se sienten frías, pálidas o pegajosas?", type="yes_no"),
+            DiagnosticQuestion(id="q4", question="¿Presenta vómitos, letargia extrema o temblores corporales?", type="yes_no"),
+        ]
     else:
+        q_respir = (
+            "¿Respira con la boca abierta o jadea intensamente? (En gatos la respiración con boca abierta es emergencia crítica)"
+            if is_feline
+            else "¿Presenta respiración agitada, cuello estirado o jadeo con ruidos anormales?"
+        )
         return [
             DiagnosticQuestion(id="q1", question="¿Las encías están blancas o moradas?", type="yes_no"),
             DiagnosticQuestion(id="q2", question="¿El abdomen se siente duro, inflamado o doloroso al tacto?", type="yes_no"),
             DiagnosticQuestion(id="q3", question="¿Sospecha de ingesta de veneno, plantas tóxicas o basura?", type="yes_no"),
-            DiagnosticQuestion(id="q4", question="¿Presenta respiración agitada, cuello estirado o jadeo con boca abierta?", type="yes_no"),
+            DiagnosticQuestion(id="q4", question=q_respir, type="yes_no"),
         ]
 
 
 class MultimodalTriageAIService:
     """
     Multimodal clinical veterinary triage service powered by Google Gemini Flash.
-    Executes inference within worker threads to ensure non-blocking FastAPI asynchronous behavior.
-    Includes diagnostic confirmation questions and emergency first-aid chat with resilient fallbacks.
+    Executes real image byte inspection within worker threads to ensure non-blocking async FastAPI behavior.
+    Includes species-specific clinical reasoning, diagnostic confirmation, and emergency first-aid chat.
     """
 
     def __init__(
@@ -166,6 +183,17 @@ class MultimodalTriageAIService:
         self._thread_pool_manager = thread_pool_manager or get_thread_pool_manager()
         self._api_key = (self._settings.GEMINI_API_KEY or "").strip()
         self._primary_model = self._settings.GEMINI_MODEL or "gemini-2.5-flash"
+
+        # Candidate models list: start with primary, follow with active Gemini flash models
+        self._candidate_models = [
+            self._primary_model,
+            "gemini-3.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-flash-latest",
+        ]
+        # De-duplicate while preserving order
+        self._candidate_models = list(dict.fromkeys(self._candidate_models))
+
         self._client: Optional[genai.Client] = None
 
         if self.is_configured:
@@ -175,8 +203,8 @@ class MultimodalTriageAIService:
                     http_options=types.HttpOptions(timeout=12000),
                 )
                 logger.info(
-                    "[TRIAGE AI] Cliente de Google Gemini inicializado correctamente con modelo: %s",
-                    self._primary_model,
+                    "[TRIAGE AI] Cliente de Google Gemini inicializado. Modelos candidatos: %s",
+                    self._candidate_models,
                 )
             except Exception as exc:
                 logger.warning("[TRIAGE AI WARNING] Error inicializando cliente de Gemini: %s", exc)
@@ -196,11 +224,11 @@ class MultimodalTriageAIService:
         edad_aprox: Optional[str] = None,
     ) -> TriageAnalysisResponse:
         """
-        Deterministic, high-accuracy clinical rule engine used when Gemini API
-        is unreachable, offline, experiencing rate limits or key is missing.
-        Ensures the endpoint is 100% resilient and NEVER fails the client.
+        Deterministic species-specific clinical rule engine used only when all Gemini
+        models are completely unreachable (no internet or service outage).
         """
         text = descripcion.lower()
+        is_feline = any(k in especie.lower() for k in ["felin", "gat"])
 
         critical_signals = [
             "shock", "paro", "sangrado masivo", "hemorragia masiva", "sangrado profuso",
@@ -223,29 +251,30 @@ class MultimodalTriageAIService:
             "decaido", "triste", "inapetente", "no come", "herida leve"
         ]
 
-        patient_desc = f"{especie} ({peso_kg} kg)"
+        species_tag = "Felino" if is_feline else "Canino"
+        patient_desc = f"{species_tag} ({especie}, {peso_kg} kg)"
         if raza:
             patient_desc += f", raza {raza}"
-        if edad_aprox:
-            patient_desc += f", edad {edad_aprox}"
 
         triage_id = str(uuid.uuid4())
         diagnostic_questions = generate_default_diagnostic_questions(descripcion, especie)
 
         if any(sig in text for sig in critical_signals):
+            diag = (
+                ["Shock hipovolémico / hipotérmico agudo felino", "Obstrucción uretral o trauma torácico con disnea felina"]
+                if is_feline
+                else ["Traumatismo severo canino con hemorragia activa o fractura", "Síndrome de dilatación-torsión gástrica (GDV) / Shock hipovolémico"]
+            )
             return TriageAnalysisResponse(
                 triage_id=triage_id,
                 urgency_level="CRITICO",
                 color_code="RED",
                 visual_findings=(
-                    f"Inspección visual clínica de emergencia para {patient_desc}: "
-                    "Se evidencia solución de continuidad tisular severa o signos compatibles con sangrado activo rutilante, "
-                    "compromiso hemodinámico o alteración neuromuscular aguda descrita en el cuadro."
+                    f"Inspección clínica urgente para {patient_desc}: "
+                    "Se evidencia solución de continuidad tisular grave o signos compatibles con sangrado profuso activo, "
+                    "colapso circulatorio o alteración neuromuscular severa descrita por el tutor."
                 ),
-                presumptive_diagnosis=[
-                    "Traumatismo severo descompensado con hemorragia activa o fractura",
-                    "Shock hipovolémico / distributivo inminente por pérdida de volumen o dolor agudo",
-                ],
+                presumptive_diagnosis=diag,
                 vital_risks=[
                     "Paro cardiorrespiratorio por fallo hemodinámico o compromiso de vía aérea",
                     "Hipotermia severa y fallo multiorgánico progresivo",
@@ -266,19 +295,21 @@ class MultimodalTriageAIService:
             )
 
         elif any(sig in text for sig in urgent_signals):
+            diag = (
+                ["Gastroenteritis aguda felina con riesgo acelerado de lipidosis hepática", "Laceración tisular penetrante con riesgo de infección profunda"]
+                if is_feline
+                else ["Gastroenteritis aguda severa canina con pérdida hidroelectrolítica crítica", "Intoxicación o laceración dérmica profunda"]
+            )
             return TriageAnalysisResponse(
                 triage_id=triage_id,
                 urgency_level="URGENTE",
                 color_code="ORANGE",
                 visual_findings=(
-                    f"Inspección visual clínica para {patient_desc}: "
+                    f"Inspección clínica de urgencia para {patient_desc}: "
                     "Se observan lesiones dérmicas de espesor considerable o signos de pérdida profusa de fluidos "
                     "(vómito/deposición anormal o dolor agudo) con riesgo de rápido deterioro sistémico."
                 ),
-                presumptive_diagnosis=[
-                    "Gastroenteritis aguda severa con pérdida crítica hidroelectrolítica",
-                    "Laceración tisular penetrante con riesgo inminente de contaminación bacteriana profunda",
-                ],
+                presumptive_diagnosis=diag,
                 vital_risks=[
                     "Deshidratación severa con desbalance electrolítico y acidosis metabólica",
                     "Shock séptico o descompensación hemodinámica por dolor agudo",
@@ -298,19 +329,21 @@ class MultimodalTriageAIService:
             )
 
         elif any(sig in text for sig in moderate_signals):
+            diag = (
+                ["Dermatitis focal o absceso felino (frecuente por rasguño o mordedura)", "Lesión osteoarticular con apoyo parcial"]
+                if is_feline
+                else ["Dermatitis bacteriana focalizada / celulitis o absceso canino", "Lesión musculoesquelética de grado leve a moderado"]
+            )
             return TriageAnalysisResponse(
                 triage_id=triage_id,
                 urgency_level="MODERADO",
                 color_code="YELLOW",
                 visual_findings=(
-                    f"Inspección visual clínica para {patient_desc}: "
+                    f"Inspección clínica para {patient_desc}: "
                     "Se aprecia proceso inflamatorio focalizado, claudicación con apoyo parcial o secreción localizada "
                     "sin sangrado profuso ni signos de shock inminente."
                 ),
-                presumptive_diagnosis=[
-                    "Dermatitis bacteriana focalizada / celulitis o absceso en formación",
-                    "Lesión osteoarticular o muscular de grado leve a moderado sin fractura expuesta",
-                ],
+                presumptive_diagnosis=diag,
                 vital_risks=[
                     "Sobreinfección bacteriana secundaria por rascado o lamido constante",
                     "Cronicidad del proceso inflamatorio y aumento del dolor localizado",
@@ -335,11 +368,11 @@ class MultimodalTriageAIService:
                 urgency_level="LEVE",
                 color_code="GREEN",
                 visual_findings=(
-                    f"Inspección visual clínica para {patient_desc}: "
+                    f"Inspección clínica para {patient_desc}: "
                     "Lesión superficial limpia o alteración menor sin compromiso dérmico profundo ni signos de inflamación severa."
                 ),
                 presumptive_diagnosis=[
-                    "Excoriación superficial limpia o raspadura dérmica menor",
+                    f"Excoriación superficial limpia en {species_tag.lower()}",
                     "Proceso irritativo o prurítico focalizado de curso benigno",
                 ],
                 vital_risks=[
@@ -370,12 +403,15 @@ class MultimodalTriageAIService:
         edad_aprox: Optional[str] = None,
     ) -> TriageAnalysisResponse:
         """
-        Synchronous inference call to Gemini API using gemini-2.5-flash
-        with parts structure [{"mime_type": ..., "data": contents}, prompt_text],
-        regex JSON cleanup, and deterministic clinical engine backup.
+        Synchronous multimodal inference call to Google Gemini with real image bytes ingestion.
+        Tries candidate models sequentially to guarantee actual AI execution.
         """
+        # Mandatory console log as requested
+        print(f"[TRIAGE AI] Analizando imagen de {len(image_bytes)} bytes para especie: {especie}")
+        logger.info("[TRIAGE AI] Analizando imagen de %d bytes para especie: %s", len(image_bytes), especie)
+
         if not self._client or not self.is_configured:
-            logger.info("[TRIAGE AI] Operando con motor clínico de contingencia (sin cliente Gemini directo).")
+            logger.info("[TRIAGE AI] Cliente Gemini no disponible, activando motor determinista.")
             res = self._generate_rule_based_fallback(
                 especie=especie,
                 peso_kg=peso_kg,
@@ -383,70 +419,87 @@ class MultimodalTriageAIService:
                 raza=raza,
                 edad_aprox=edad_aprox,
             )
+            print(f"[TRIAGE AI] Respuesta generada (fallback): {res.urgency_level} - {res.visual_findings[:80]}...")
             self._save_session(res.triage_id, res, especie, peso_kg, descripcion)
             return res
 
-        prompt_text = (
-            f"CONSULTA CLÍNICA DE TRIAGE VETERINARIO MULTIMODAL:\n"
-            f"- Especie: {especie}\n"
-            f"- Peso corporal: {peso_kg} kg\n"
-        )
-        if raza:
-            prompt_text += f"- Raza: {raza}\n"
-        if edad_aprox:
-            prompt_text += f"- Edad aproximada: {edad_aprox}\n"
-        prompt_text += (
-            f"- Síntomas y motivo reportado: {descripcion}\n\n"
-            f"Analiza la imagen adjunta con rigor clínico y emite tu evaluación. "
-            f"Incluye la lista de 3 a 4 preguntas de descarte clínico ('diagnostic_questions'). "
-            f"Responde ÚNICAMENTE con el objeto JSON puro estructurado según el esquema solicitado."
-        )
-
+        # Construct multimodal input parts
         image_part = types.Part.from_bytes(
             data=image_bytes,
             mime_type=mime_type or "image/jpeg",
         )
 
+        patient_info = f"- Especie del paciente: {especie}\n- Peso aproximado: {peso_kg} kg\n"
+        if raza:
+            patient_info += f"- Raza: {raza}\n"
+        if edad_aprox:
+            patient_info += f"- Edad aproximada: {edad_aprox}\n"
+        patient_info += f"- Descripción de síntomas / motivo de consulta: {descripcion}\n"
+
+        prompt_text = (
+            f"CONSULTA CLÍNICA DE TRIAGE VETERINARIO MULTIMODAL:\n"
+            f"{patient_info}\n"
+            f"INSTRUCCIONES CLÍNICAS PRIORITARIAS:\n"
+            f"1. Inspecciona minuciosamente la imagen adjunta. Describe en 'visual_findings' los elementos "
+            f"visuales exactos observados (colorimetría, texturas, heridas, consistencia de fluidos o postura).\n"
+            f"2. Basa tu análisis exclusivamente en la fisiopatología de {especie}. No apliques razonamiento de caninos si es felino ni viceversa.\n"
+            f"3. Genera 3 a 4 preguntas de descarte clínico ('diagnostic_questions') totalmente personalizadas a lo que ves en la imagen.\n"
+            f"Responde ÚNICAMENTE con el objeto JSON puro estructurado según el esquema solicitado."
+        )
+
         config = types.GenerateContentConfig(
             system_instruction=VET_TRIAGE_SYSTEM_PROMPT,
             response_mime_type="application/json",
-            response_schema=TriageAnalysisResponse,
             temperature=0.1,
         )
 
-        try:
-            logger.info("[TRIAGE AI] Enviando inferencia multimodal a Gemini con modelo: %s", self._primary_model)
-            response = self._client.models.generate_content(
-                model=self._primary_model,
-                contents=[image_part, prompt_text],
-                config=config,
-            )
+        # Iterate through models: primary first, then working fallback flash models
+        for model_name in self._candidate_models:
+            try:
+                logger.info("[TRIAGE AI] Invocando modelo multimodal: %s con imagen de %d bytes", model_name, len(image_bytes))
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=[image_part, prompt_text],
+                    config=config,
+                )
 
-            result: Optional[TriageAnalysisResponse] = None
-            if response.parsed and isinstance(response.parsed, TriageAnalysisResponse):
-                result = response.parsed
-            elif isinstance(response.parsed, dict):
-                result = TriageAnalysisResponse.model_validate(response.parsed)
-            elif response.text and response.text.strip():
-                parsed_json = clean_and_parse_json(response.text)
-                result = TriageAnalysisResponse.model_validate(parsed_json)
+                raw_text = response.text or ""
+                if not raw_text.strip() and response.parsed:
+                    result_dict = response.parsed.model_dump() if hasattr(response.parsed, "model_dump") else dict(response.parsed)
+                else:
+                    result_dict = clean_and_parse_json(raw_text)
 
-            if result:
-                if not result.diagnostic_questions:
-                    result.diagnostic_questions = generate_default_diagnostic_questions(descripcion, especie)
-                if not result.triage_id:
-                    result.triage_id = str(uuid.uuid4())
-                self._save_session(result.triage_id, result, especie, peso_kg, descripcion)
-                return result
+                if result_dict and isinstance(result_dict, dict):
+                    # Guarantee unique UUID and species-specific questions if missing
+                    if not result_dict.get("triage_id"):
+                        result_dict["triage_id"] = str(uuid.uuid4())
+                    if not result_dict.get("diagnostic_questions"):
+                        result_dict["diagnostic_questions"] = [
+                            q.model_dump() for q in generate_default_diagnostic_questions(descripcion, especie)
+                        ]
 
-        except Exception as exc:
-            logger.warning(
-                "[TRIAGE AI NOTICE] Inferencia con modelo %s retornó: %s. Activando motor clínico de contingencia.",
-                self._primary_model,
-                exc,
-            )
+                    assessment = TriageAnalysisResponse.model_validate(result_dict)
 
-        logger.info("[TRIAGE AI] Retornando evaluación con motor clínico determinista de contingencia.")
+                    # Required console output
+                    print(f"[TRIAGE AI] Respuesta generada: {result_dict.get('urgency_level')} - {str(result_dict.get('visual_findings', ''))[:80]}...")
+                    logger.info(
+                        "[TRIAGE AI SUCCESS] Inferencia multimodal completada con %s para %s. Nivel: %s",
+                        model_name,
+                        especie,
+                        assessment.urgency_level,
+                    )
+
+                    self._save_session(assessment.triage_id, assessment, especie, peso_kg, descripcion)
+                    return assessment
+
+            except Exception as exc:
+                logger.warning(
+                    "[TRIAGE AI NOTICE] Inferencia con modelo %s falló: %s. Probando siguiente modelo.",
+                    model_name,
+                    exc,
+                )
+
+        logger.error("[TRIAGE AI ERROR] Todos los modelos de Gemini fallaron. Utilizando contingencia.")
         fallback = self._generate_rule_based_fallback(
             especie=especie,
             peso_kg=peso_kg,
@@ -454,6 +507,7 @@ class MultimodalTriageAIService:
             raza=raza,
             edad_aprox=edad_aprox,
         )
+        print(f"[TRIAGE AI] Respuesta generada (fallback de emergencia): {fallback.urgency_level} - {fallback.visual_findings[:80]}...")
         self._save_session(fallback.triage_id, fallback, especie, peso_kg, descripcion)
         return fallback
 
@@ -532,13 +586,11 @@ class MultimodalTriageAIService:
         Deterministic clinical re-evaluation based on rule-out questionnaire answers.
         Escalates immediately to CRITICAL / RED when life-threatening signs are confirmed.
         """
-        # Map questions if provided
         q_map: Dict[str, str] = {}
         if questions:
             for q in questions:
                 q_map[q.id] = q.question.lower()
 
-        # Check answers for critical and urgent indicators
         has_critical_sign = False
         has_urgent_sign = False
 
@@ -548,7 +600,6 @@ class MultimodalTriageAIService:
 
             q_text = q_map.get(q_id, "").lower()
 
-            # Direct check on key id conventions (q1: encías blancas/moradas, q2: abdomen duro, q3: veneno/basura)
             if q_id in ["q1", "1"] or any(k in q_text for k in ["encía", "gias", "blanca", "morad", "azul", "palid"]):
                 has_critical_sign = True
             elif q_id in ["q2", "2"] or any(k in q_text for k in ["abdomen", "duro", "inflam", "dolor", "hinch", "distend"]):
@@ -559,26 +610,29 @@ class MultimodalTriageAIService:
                 has_urgent_sign = True
 
         prev_urgency = (initial_urgency_level or "MODERADO").upper()
+        target_species = species or "Mascota"
+        is_feline = any(k in target_species.lower() for k in ["felin", "gat"])
 
         if has_critical_sign:
+            diag = (
+                ["Shock hemodinámico felino agudo", "Obstrucción uretral felina (FLUTD) / Hipoperfusión severa", "Peritonitis o hemorragia interna"]
+                if is_feline
+                else ["Shock hemodinámico canino por colapso cardiovascular", "Abdomen agudo quirúrgico / Dilatación-torsión gástrica (GDV)", "Hemorragia interna activa"]
+            )
             return ConfirmDiagnosisResponse(
                 triage_id=triage_id,
                 urgency_level="CRITICO",
                 color_code="RED",
                 is_escalated=(prev_urgency != "CRITICO"),
                 clinical_reassessment=(
-                    "ALERTA CLÍNICA ROJA - ESCALADA DE URGENCIA CRÍTICA: "
-                    "El tutor confirmó signos de alarma vital (como encías pálidas/cianóticas o abdomen agudo en tabla). "
-                    "Estos hallazgos son compatibles con colapso hemodinámico inminente, shock hipovolémico, "
-                    "hemoperitoneo o síndrome de dilatación-torsión gástrica. Se escala de inmediato a nivel CRÍTICO / ROJO."
+                    f"ALERTA CLÍNICA ROJA - ESCALADA DE URGENCIA CRÍTICA ({target_species}): "
+                    "El tutor confirmó signos de alarma vital (como encías pálidas/cianóticas o abdomen agudo doloroso). "
+                    "Estos hallazgos son compatibles con colapso hemodinámico inminente, shock hipovolémico o descompensación severa. "
+                    "Se escala de inmediato a nivel CRÍTICO / ROJO con requerimiento de estabilización hospitalaria urgente."
                 ),
-                presumptive_diagnosis=[
-                    "Shock hemodinámico o distributivo agudo por hipoperfusión",
-                    "Abdomen agudo quirúrgico / Síndrome de dilatación-torsión gástrica (GDV)",
-                    "Hemorragia interna activa o insuficiencia circulatoria severa",
-                ],
+                presumptive_diagnosis=diag,
                 vital_risks=[
-                    "Paro cardiorrespiratorio inminente por colapso cardiovascular",
+                    "Paro cardiorrespiratorio inminente por colapso circulatorio",
                     "Necrosis tisular visceral masiva y fallo multiorgánico",
                 ],
                 first_aid_actions=[
@@ -602,13 +656,13 @@ class MultimodalTriageAIService:
                 color_code="ORANGE",
                 is_escalated=(prev_urgency in ["MODERADO", "LEVE"]),
                 clinical_reassessment=(
-                    "REEVALUACIÓN DE URGENCIA POR INTOXICACIÓN O DOLOR AGUDO: "
+                    f"REEVALUACIÓN DE URGENCIA POR INTOXICACIÓN O DOLOR AGUDO ({target_species}): "
                     "La confirmación de sospecha de ingesta de veneno, sustancias tóxicas o descompensación digestiva "
                     "requiere neutralización y estabilización rápida para prevenir absorción sistémica y daño hepatorrenal. "
                     "Se confirma el caso en nivel URGENTE / NARANJA."
                 ),
                 presumptive_diagnosis=[
-                    "Intoxicación exógena aguda por rodenticida, toxina vegetal o fármacos",
+                    f"Intoxicación exógena aguda en {target_species.lower()}",
                     "Gastroenteritis tóxica severa con potencial descompensación hidroelectrolítica",
                 ],
                 vital_risks=[
@@ -629,20 +683,19 @@ class MultimodalTriageAIService:
                 recommended_facility_type="Clínica 24 horas con quirófano",
             )
         else:
-            # All rule-out answers are negative
             return ConfirmDiagnosisResponse(
                 triage_id=triage_id,
                 urgency_level="MODERADO" if "CRITIC" in prev_urgency else prev_urgency,
                 color_code="YELLOW" if "CRITIC" in prev_urgency else ("GREEN" if prev_urgency == "LEVE" else "YELLOW"),
                 is_escalated=False,
                 clinical_reassessment=(
-                    "REEVALUACIÓN CONFIRMATORIA ESTABLE: "
+                    f"REEVALUACIÓN CONFIRMATORIA ESTABLE ({target_species}): "
                     "Las respuestas del test descartan signos de alarma vital inmediata (encías con buena perfusión, "
                     "sin distensión abdominal dolorosa ni sospecha de tóxicos fulminantes). "
                     "Se mantiene la pauta de cuidados y monitoreo cercano de la evolución clínica."
                 ),
                 presumptive_diagnosis=[
-                    "Cuadro clínico en evolución estable sin signos de shock",
+                    f"Cuadro clínico en {target_species.lower()} en evolución estable sin signos de shock",
                     "Afección moderada o leve con estabilidad hemodinámica relativa",
                 ],
                 vital_risks=[
@@ -670,8 +723,7 @@ class MultimodalTriageAIService:
         initial_urgency_level: Optional[str] = None,
         questions: Optional[List[DiagnosticQuestion]] = None,
     ) -> ConfirmDiagnosisResponse:
-        """Synchronously executes diagnosis confirmation via Gemini or clinical rule engine."""
-        # Retrieve context from session store if available
+        """Synchronously executes diagnosis confirmation via Gemini with multi-model failover."""
         session = _GLOBAL_TRIAGE_SESSION_STORE.get(triage_id, {})
         target_species = species or session.get("species") or "Mascota"
         target_symptoms = initial_symptoms or session.get("initial_symptoms") or "Paciente en triaje"
@@ -686,7 +738,7 @@ class MultimodalTriageAIService:
                 pass
 
         if not self._client or not self.is_configured:
-            logger.info("[TRIAGE AI] Ejecutando confirmación diagnóstica con motor de reglas determinista.")
+            logger.info("[TRIAGE AI] Reevaluación con motor de reglas determinista.")
             res = self._generate_rule_based_confirmation(
                 triage_id=triage_id,
                 answers=answers,
@@ -699,11 +751,10 @@ class MultimodalTriageAIService:
                 _GLOBAL_TRIAGE_SESSION_STORE[triage_id]["confirmation"] = res.model_dump()
             return res
 
-        # Formulate prompt for Gemini confirmation
         prompt = (
             f"TEST CLÍNICO CONFIRMATORIO DE TRIAGE VETERINARIO:\n"
             f"- Triage ID: {triage_id}\n"
-            f"- Paciente: {target_species}\n"
+            f"- Especie: {target_species}\n"
             f"- Síntomas iniciales: {target_symptoms}\n"
             f"- Nivel de urgencia previo: {target_initial_urgency}\n"
             f"- Respuestas del tutor a las preguntas de descarte:\n"
@@ -712,7 +763,7 @@ class MultimodalTriageAIService:
             prompt += f"  * ID {q_id}: {ans}\n"
 
         prompt += (
-            "\nReevalúa metódicamente el estado clínico. "
+            f"\nReevalúa metódicamente el estado clínico considerando la fisiopatología de {target_species}. "
             "Si el tutor confirma encías blancas o moradas, abdomen duro o sospecha de veneno, "
             "ESCALA INMEDIATAMENTE a CRÍTICO / ROJO. "
             "Responde ÚNICAMENTE con el objeto JSON puro estructurado."
@@ -721,35 +772,29 @@ class MultimodalTriageAIService:
         config = types.GenerateContentConfig(
             system_instruction=VET_CONFIRMATION_SYSTEM_PROMPT,
             response_mime_type="application/json",
-            response_schema=ConfirmDiagnosisResponse,
             temperature=0.1,
         )
 
-        try:
-            logger.info("[TRIAGE AI] Reevaluando urgencia confirmatoria con Gemini modelo: %s", self._primary_model)
-            response = self._client.models.generate_content(
-                model=self._primary_model,
-                contents=prompt,
-                config=config,
-            )
+        for model_name in self._candidate_models:
+            try:
+                logger.info("[TRIAGE AI] Reevaluando urgencia confirmatoria con Gemini modelo: %s", model_name)
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=config,
+                )
 
-            result: Optional[ConfirmDiagnosisResponse] = None
-            if response.parsed and isinstance(response.parsed, ConfirmDiagnosisResponse):
-                result = response.parsed
-            elif isinstance(response.parsed, dict):
-                result = ConfirmDiagnosisResponse.model_validate(response.parsed)
-            elif response.text and response.text.strip():
-                parsed_json = clean_and_parse_json(response.text)
-                result = ConfirmDiagnosisResponse.model_validate(parsed_json)
+                raw_text = response.text or ""
+                parsed_json = clean_and_parse_json(raw_text)
+                if parsed_json and isinstance(parsed_json, dict):
+                    parsed_json["triage_id"] = triage_id
+                    result = ConfirmDiagnosisResponse.model_validate(parsed_json)
+                    if triage_id in _GLOBAL_TRIAGE_SESSION_STORE:
+                        _GLOBAL_TRIAGE_SESSION_STORE[triage_id]["confirmation"] = result.model_dump()
+                    return result
 
-            if result:
-                result.triage_id = triage_id
-                if triage_id in _GLOBAL_TRIAGE_SESSION_STORE:
-                    _GLOBAL_TRIAGE_SESSION_STORE[triage_id]["confirmation"] = result.model_dump()
-                return result
-
-        except Exception as exc:
-            logger.warning("[TRIAGE AI NOTICE] Reevaluación con Gemini retornó: %s. Aplicando contingencia.", exc)
+            except Exception as exc:
+                logger.warning("[TRIAGE AI NOTICE] Reevaluación con Gemini (%s) falló: %s", model_name, exc)
 
         fallback = self._generate_rule_based_confirmation(
             triage_id=triage_id,
@@ -854,7 +899,7 @@ class MultimodalTriageAIService:
         context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[ChatMessage]] = None,
     ) -> EmergencyChatResponse:
-        """Synchronously processes emergency chat with Gemini or deterministic empathetic assistant."""
+        """Synchronously processes emergency chat with Gemini or deterministic assistant."""
         session = _GLOBAL_TRIAGE_SESSION_STORE.get(triage_id, {})
         full_context = dict(session)
         if context:
@@ -867,7 +912,7 @@ class MultimodalTriageAIService:
         history = conversation_history or []
 
         if not self._client or not self.is_configured:
-            logger.info("[TRIAGE AI CHAT] Operando con asistente determinista de contingencia.")
+            logger.info("[TRIAGE AI CHAT] Operando con asistente determinista.")
             reply_text = self._generate_rule_based_chat_reply(
                 triage_id=triage_id,
                 message=message,
@@ -880,7 +925,6 @@ class MultimodalTriageAIService:
                 timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             )
 
-        # Build prompt for Gemini chat
         chat_prompt = (
             f"CONTEXTO DEL CASO DE TRIAGE:\n"
             f"- Triage ID: {triage_id}\n"
@@ -900,8 +944,8 @@ class MultimodalTriageAIService:
         chat_prompt += (
             f"\nNUEVA CONSULTA DEL TUTOR:\n"
             f"\"{message}\"\n\n"
-            f"Responde directamente al tutor con instrucciones de primeros auxilios y orientación médica empática, "
-            f"segura y directa. Recuerda: NUNCA recetes medicamentos humanos ni fármacos bajo receta."
+            f"Responde directamente al tutor de {species} con instrucciones de primeros auxilios y orientación médica empática, "
+            f"segura y directa. Recuerda: NUNCA recetes medicamentos humanos ni fármacos bajo receta médica."
         )
 
         config = types.GenerateContentConfig(
@@ -909,21 +953,22 @@ class MultimodalTriageAIService:
             temperature=0.2,
         )
 
-        try:
-            logger.info("[TRIAGE AI CHAT] Consultando asistente de urgencias con Gemini modelo: %s", self._primary_model)
-            response = self._client.models.generate_content(
-                model=self._primary_model,
-                contents=chat_prompt,
-                config=config,
-            )
-            if response.text and response.text.strip():
-                return EmergencyChatResponse(
-                    triage_id=triage_id,
-                    reply=response.text.strip(),
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        for model_name in self._candidate_models:
+            try:
+                logger.info("[TRIAGE AI CHAT] Consultando chat con Gemini modelo: %s", model_name)
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=chat_prompt,
+                    config=config,
                 )
-        except Exception as exc:
-            logger.warning("[TRIAGE AI CHAT NOTICE] Fallo en Gemini Chat: %s. Activando contingencia.", exc)
+                if response.text and response.text.strip():
+                    return EmergencyChatResponse(
+                        triage_id=triage_id,
+                        reply=response.text.strip(),
+                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    )
+            except Exception as exc:
+                logger.warning("[TRIAGE AI CHAT NOTICE] Fallo en Gemini Chat (%s): %s", model_name, exc)
 
         reply_text = self._generate_rule_based_chat_reply(
             triage_id=triage_id,
