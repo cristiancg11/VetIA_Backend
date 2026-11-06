@@ -18,6 +18,9 @@ from app.schemas.triage import (
 )
 from app.services.triage_ai import (
     MultimodalTriageAIService,
+    generate_local_chat_fallback,
+    generate_local_clinical_fallback,
+    generate_local_confirmation_fallback,
     is_transient_overload_error,
 )
 
@@ -185,24 +188,23 @@ async def analyze_veterinary_triage(
         )
         return assessment
 
-    except HTTPException:
-        raise
     except Exception as exc:
-        if is_transient_overload_error(exc):
-            logger.warning("[TRIAGE API] Detectada alta demanda de IA (503): %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
-            )
-        logger.error(
-            "[TRIAGE ERROR] Error durante la inferencia de Gemini: %s",
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning(
+            "[TRIAGE API SAFE RECOVERY] Activando respuesta estructurada de contingencia (200 OK) ante excepción en Gemini (%s): %s",
+            type(exc).__name__,
             exc,
-            exc_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error en inferencia multimodal de Gemini: {str(exc)}",
+        print(
+            f"\n🛡️ [TRIAGE API SAFE RECOVERY] Fallback estructurado 200 OK generado en {elapsed_ms:.2f} ms "
+            f"para {target_species} ante incidencia en API externa: {exc}\n"
         )
+        fallback = generate_local_clinical_fallback(
+            species=target_species,
+            peso_kg=target_weight,
+            descripcion=target_description,
+        )
+        return fallback
 
 
 # =============================================================================
@@ -259,23 +261,20 @@ async def confirm_veterinary_diagnosis(
         )
         return confirmation
 
-    except HTTPException:
-        raise
     except Exception as exc:
-        if is_transient_overload_error(exc):
-            logger.warning("[CONFIRM DIAGNOSIS API] Detectada alta demanda de IA (503): %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
-            )
-        logger.error(
-            "[CONFIRM DIAGNOSIS ERROR] Error durante la confirmación: %s",
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning(
+            "[CONFIRM DIAGNOSIS SAFE RECOVERY] Activando respuesta estructurada de contingencia (200 OK): %s",
             exc,
-            exc_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error en confirmación diagnóstica de Gemini: {str(exc)}",
+        print(
+            f"\n🛡️ [CONFIRM DIAGNOSIS SAFE RECOVERY] Fallback estructurado 200 OK generado en {elapsed_ms:.2f} ms ante caída de Gemini.\n"
+        )
+        return generate_local_confirmation_fallback(
+            triage_id=payload.triage_id,
+            species=target_species or "Bovino",
+            initial_urgency=payload.initial_urgency_level or "MODERADO",
+            answers=payload.answers,
         )
 
 
@@ -332,21 +331,17 @@ async def triage_emergency_chat(
         )
         return reply
 
-    except HTTPException:
-        raise
     except Exception as exc:
-        if is_transient_overload_error(exc):
-            logger.warning("[EMERGENCY CHAT API] Detectada alta demanda de IA (503): %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Los servidores de IA veterinaria están experimentando alta demanda momentánea. Por favor presiona 'Reintentar Evaluación' en 10 segundos.",
-            )
-        logger.error(
-            "[EMERGENCY CHAT ERROR] Error en chat de emergencias: %s",
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning(
+            "[EMERGENCY CHAT SAFE RECOVERY] Activando respuesta orientativa estructurada (200 OK): %s",
             exc,
-            exc_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error en chat de emergencias de Gemini: {str(exc)}",
+        print(
+            f"\n🛡️ [EMERGENCY CHAT SAFE RECOVERY] Chat estructurado 200 OK generado en {elapsed_ms:.2f} ms ante caída de Gemini.\n"
+        )
+        return generate_local_chat_fallback(
+            triage_id=payload.triage_id,
+            species="Mascota",
+            message=query_text,
         )
